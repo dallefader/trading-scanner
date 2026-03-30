@@ -1,7 +1,6 @@
-streamlit==1.32.0
-yfinance==0.2.54
-pandas==2.2.2
-numpy==1.26.4
-plotly==5.22.0
-pytz==2024.1
-altair==4.2.2
+streamlit
+yfinance
+pandas
+numpy
+plotly
+pytz
