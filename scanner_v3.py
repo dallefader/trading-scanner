@@ -904,10 +904,17 @@ UNIVERSE = [
 # ══════════════════════════════════════════════════════════════
 def safe_col(df, col):
     """Håndterer både normal og MultiIndex DataFrame fra yfinance"""
-    if isinstance(df.columns, pd.MultiIndex):
-        # MultiIndex: (kolonne, ticker) – tag første ticker
-        return df[col].iloc[:, 0].squeeze().values
-    return df[col].squeeze().values
+    try:
+        if isinstance(df.columns, pd.MultiIndex):
+            # Ny yfinance: MultiIndex er (kolonne, ticker)
+            if col in df.columns.get_level_values(0):
+                return df[col].iloc[:, 0].values
+            # Ældre yfinance: MultiIndex er (ticker, kolonne)
+            if col in df.columns.get_level_values(1):
+                return df.xs(col, axis=1, level=1).iloc[:, 0].values
+        return df[col].squeeze().values
+    except:
+        return df.iloc[:, 0].values  # fallback
 
 def sma(arr, n):
     if arr is None or len(arr)<n: return None
@@ -980,15 +987,16 @@ def derive_states(price,sma20,sma60,sma200,rsi,rsi_trend,low5,dist_h20,
     ext=(rsi is not None and rsi>84) or price>sma20*1.14
 
     # ── MOMENTUM-KORREKT SVAGHEDSLOGIK ──
-    rsi_recovering = rsi_trend == 'UP' and rsi is not None and rsi > 36
+    # rsi_recovering kræver nu at RSI faktisk er over 40 OG stiger
+    rsi_recovering = (rsi_trend == 'UP' and rsi is not None and rsi > 40)
+
     fs = (rs_trend == 'DOWN'
           and price < sma200
           and (sma20 < sma60 or (rsi is not None and rsi < 36))
           and not rsi_recovering)
 
-    # WEAKENING: RS svækkes + under SMA20 (men ikke nødvendigvis under SMA200)
-    wk = (rs_trend == 'DOWN' and price < sma20
-          and not fs)
+    # WEAKENING: RS svækkes + under SMA20
+    wk = (rs_trend == 'DOWN' and price < sma20 and not fs)
 
     ss=0
     if accum: ss+=20
@@ -1087,7 +1095,11 @@ def fetch_reference_indices():
                          group_by='ticker', auto_adjust=True, progress=False, threads=True)
         for idx in unique_indices:
             try:
-                df = (raw[idx] if len(unique_indices)>1 else raw).dropna()
+                if isinstance(raw.columns, pd.MultiIndex):
+                    df = raw.xs(idx, axis=1, level=1) if idx in raw.columns.get_level_values(1) else (raw[idx] if idx in raw.columns.get_level_values(0) else raw)
+                else:
+                    df = (raw[idx] if len(unique_indices)>1 else raw)
+                df = df.dropna()
                 if len(df) >= 25:
                     closes[idx] = safe_col(df,'Close')
             except: pass
@@ -1103,7 +1115,11 @@ def fetch_market_data():
                         group_by='ticker',auto_adjust=True,progress=False)
         for t in all_tickers:
             try:
-                df=(raw[t] if len(all_tickers)>1 else raw).dropna()
+                if isinstance(raw.columns, pd.MultiIndex):
+                    df = raw.xs(t, axis=1, level=1) if t in raw.columns.get_level_values(1) else (raw[t] if t in raw.columns.get_level_values(0) else raw)
+                else:
+                    df = (raw[t] if len(all_tickers)>1 else raw)
+                df = df.dropna()
                 if len(df)<5: continue
                 c=safe_col(df,'Close')
                 p=float(c[-1]); prev=float(c[-2])
@@ -1129,7 +1145,7 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
     results=[]
     all_raw={}
 
-    # Hent alle aktier i chunks af 50 – identisk med hvad der virkede
+    # Hent alle aktier i chunks af 50
     for i in range(0,len(tickers),50):
         chunk=tickers[i:i+50]
         try:
@@ -1137,7 +1153,23 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
                             group_by='ticker',auto_adjust=True,progress=False,threads=True)
             for t in chunk:
                 try:
-                    df=(raw[t] if len(chunk)>1 else raw).dropna()
+                    if len(chunk)==1:
+                        # Én aktie – kan være MultiIndex med ticker som level
+                        if isinstance(raw.columns, pd.MultiIndex):
+                            df = raw.xs(t, axis=1, level=1) if t in raw.columns.get_level_values(1) else raw.droplevel(1, axis=1)
+                        else:
+                            df = raw
+                    else:
+                        # Flere aktier – raw[t] giver normalt DataFrame
+                        if isinstance(raw.columns, pd.MultiIndex):
+                            # Ny yfinance: kolonner er (Price, Ticker)
+                            if t in raw.columns.get_level_values(1):
+                                df = raw.xs(t, axis=1, level=1)
+                            else:
+                                df = raw[t]
+                        else:
+                            df = raw[t]
+                    df = df.dropna()
                     if len(df)>=210: all_raw[t]=df
                 except: pass
         except: pass
@@ -1185,12 +1217,12 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
             ref_df = all_raw.get(local_idx) or all_raw.get('SPY')
             if ref_df is not None:
                 ref_closes = ref_safe_col(df,'Close')
-                if len(ref_closes)>=21 and n>=21:
+                if len(ref_closes)>=64 and n>=64:
                     ref_now  = float(ref_closes[-1])
-                    ref_past = float(ref_closes[-21])
+                    ref_past = float(ref_closes[-63])
                     if ref_now>0 and ref_past>0:
                         rs_now  = price / ref_now
-                        rs_past = float(c[-21]) / ref_past
+                        rs_past = float(c[-63]) / ref_past
                         rs_t = 'UP' if rs_now>rs_past else('DOWN' if rs_now<rs_past else 'FLAT')
                     else: rs_t='FLAT'
                 else: rs_t='FLAT'
