@@ -925,22 +925,23 @@ def safe_col(df, col):
 
 def normalize_df(raw, ticker):
     """
-    Normaliserer yfinance output til standard DataFrame uanset version.
-    Ny yfinance: MultiIndex (Price, Ticker) → xs på ticker level 1
-    Gammel yfinance: raw[ticker] virker direkte
+    Normaliserer yfinance output til standard DataFrame.
+    På Streamlit Cloud er MultiIndex (Ticker, Price) — ticker i level 0.
     """
     try:
         if isinstance(raw.columns, pd.MultiIndex):
             lvl0 = raw.columns.get_level_values(0).tolist()
             lvl1 = raw.columns.get_level_values(1).tolist()
-            # Ny yfinance: (Price, Ticker) – ticker er i level 1
-            if ticker in lvl1:
-                return raw.xs(ticker, axis=1, level=1).dropna()
-            # Alternativ: ticker er i level 0
+            # Streamlit Cloud / ny yfinance: (Ticker, Price) – ticker i level 0
             if ticker in lvl0:
                 return raw[ticker].dropna()
+            # Alternativ: (Price, Ticker) – ticker i level 1
+            if ticker in lvl1:
+                return raw.xs(ticker, axis=1, level=1).dropna()
         else:
-            return raw[ticker].dropna() if ticker in raw.columns else raw.dropna()
+            if ticker in raw.columns:
+                return raw[ticker].dropna()
+            return raw.dropna()
     except:
         pass
     return pd.DataFrame()
@@ -1166,9 +1167,13 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
     results=[]
     all_raw={}
 
+    # Inkluder reference indeks i download så RS Trend kan beregnes
+    ref_tickers = list(set(REGION_INDEX.values()))
+    all_tickers_to_fetch = list(set(tickers + ref_tickers))
+
     # Hent alle aktier i chunks af 50
-    for i in range(0,len(tickers),50):
-        chunk=tickers[i:i+50]
+    for i in range(0,len(all_tickers_to_fetch),50):
+        chunk=all_tickers_to_fetch[i:i+50]
         try:
             raw=yf.download(chunk,period='1y',interval='1d',
                             group_by='ticker',auto_adjust=True,progress=False,threads=True)
@@ -1178,12 +1183,13 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
                         df = raw.dropna() if not isinstance(raw.columns, pd.MultiIndex) else normalize_df(raw, t)
                     else:
                         df = normalize_df(raw, t)
-                    if len(df)>=210: all_raw[t]=df
+                    if len(df)>=60: all_raw[t]=df  # ref indeks behøver kun 60 dage
                 except: pass
         except: pass
 
     rs_raws={}
     for t,df in all_raw.items():
+        if t not in tickers: continue  # spring reference indeks over
         try:
             c = safe_col(df,'Close')
             if len(c) >= 252:
