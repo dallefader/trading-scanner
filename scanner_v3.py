@@ -906,15 +906,35 @@ def safe_col(df, col):
     """Håndterer både normal og MultiIndex DataFrame fra yfinance"""
     try:
         if isinstance(df.columns, pd.MultiIndex):
-            # Ny yfinance: MultiIndex er (kolonne, ticker)
             if col in df.columns.get_level_values(0):
                 return df[col].iloc[:, 0].values
-            # Ældre yfinance: MultiIndex er (ticker, kolonne)
             if col in df.columns.get_level_values(1):
                 return df.xs(col, axis=1, level=1).iloc[:, 0].values
         return df[col].squeeze().values
     except:
-        return df.iloc[:, 0].values  # fallback
+        return np.array([])
+
+def normalize_df(raw, ticker):
+    """
+    Normaliserer yfinance output til standard DataFrame uanset version.
+    Ny yfinance: MultiIndex (Price, Ticker) → xs på ticker level 1
+    Gammel yfinance: raw[ticker] virker direkte
+    """
+    try:
+        if isinstance(raw.columns, pd.MultiIndex):
+            lvl0 = raw.columns.get_level_values(0).tolist()
+            lvl1 = raw.columns.get_level_values(1).tolist()
+            # Ny yfinance: (Price, Ticker) – ticker er i level 1
+            if ticker in lvl1:
+                return raw.xs(ticker, axis=1, level=1).dropna()
+            # Alternativ: ticker er i level 0
+            if ticker in lvl0:
+                return raw[ticker].dropna()
+        else:
+            return raw[ticker].dropna() if ticker in raw.columns else raw.dropna()
+    except:
+        pass
+    return pd.DataFrame()
 
 def sma(arr, n):
     if arr is None or len(arr)<n: return None
@@ -1095,11 +1115,7 @@ def fetch_reference_indices():
                          group_by='ticker', auto_adjust=True, progress=False, threads=True)
         for idx in unique_indices:
             try:
-                if isinstance(raw.columns, pd.MultiIndex):
-                    df = raw.xs(idx, axis=1, level=1) if idx in raw.columns.get_level_values(1) else (raw[idx] if idx in raw.columns.get_level_values(0) else raw)
-                else:
-                    df = (raw[idx] if len(unique_indices)>1 else raw)
-                df = df.dropna()
+                df = normalize_df(raw, idx) if len(unique_indices)>1 else raw.dropna()
                 if len(df) >= 25:
                     closes[idx] = safe_col(df,'Close')
             except: pass
@@ -1115,11 +1131,7 @@ def fetch_market_data():
                         group_by='ticker',auto_adjust=True,progress=False)
         for t in all_tickers:
             try:
-                if isinstance(raw.columns, pd.MultiIndex):
-                    df = raw.xs(t, axis=1, level=1) if t in raw.columns.get_level_values(1) else (raw[t] if t in raw.columns.get_level_values(0) else raw)
-                else:
-                    df = (raw[t] if len(all_tickers)>1 else raw)
-                df = df.dropna()
+                df = normalize_df(raw, t) if len(all_tickers)>1 else raw.dropna()
                 if len(df)<5: continue
                 c=safe_col(df,'Close')
                 p=float(c[-1]); prev=float(c[-2])
@@ -1154,22 +1166,9 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
             for t in chunk:
                 try:
                     if len(chunk)==1:
-                        # Én aktie – kan være MultiIndex med ticker som level
-                        if isinstance(raw.columns, pd.MultiIndex):
-                            df = raw.xs(t, axis=1, level=1) if t in raw.columns.get_level_values(1) else raw.droplevel(1, axis=1)
-                        else:
-                            df = raw
+                        df = raw.dropna() if not isinstance(raw.columns, pd.MultiIndex) else normalize_df(raw, t)
                     else:
-                        # Flere aktier – raw[t] giver normalt DataFrame
-                        if isinstance(raw.columns, pd.MultiIndex):
-                            # Ny yfinance: kolonner er (Price, Ticker)
-                            if t in raw.columns.get_level_values(1):
-                                df = raw.xs(t, axis=1, level=1)
-                            else:
-                                df = raw[t]
-                        else:
-                            df = raw[t]
-                    df = df.dropna()
+                        df = normalize_df(raw, t)
                     if len(df)>=210: all_raw[t]=df
                 except: pass
         except: pass
@@ -1216,7 +1215,7 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
             # Brug lokalt indeks hvis det er i all_raw, ellers SPY, ellers FLAT
             ref_df = all_raw.get(local_idx) or all_raw.get('SPY')
             if ref_df is not None:
-                ref_closes = ref_safe_col(df,'Close')
+                ref_closes = safe_col(ref_df,'Close')
                 if len(ref_closes)>=64 and n>=64:
                     ref_now  = float(ref_closes[-1])
                     ref_past = float(ref_closes[-63])
