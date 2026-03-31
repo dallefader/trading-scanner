@@ -938,12 +938,12 @@ def calc_atr(highs,lows,closes,period=20):
 
 def calc_ibd_rs_raw(c):
     n=len(c)
-    if n<252: return None
+    if n<200: return None
     try:
         q4=c[-1]/c[-64]-1 if n>=64 else 0
         q3=c[-64]/c[-127]-1 if n>=127 else 0
         q2=c[-127]/c[-189]-1 if n>=189 else 0
-        q1=c[-189]/c[-252]-1 if n>=252 else 0
+        q1=c[-189]/c[-min(252,n)]-1 if n>=190 else 0
         return q4*0.40+q3*0.20+q2*0.20+q1*0.20
     except: return None
 
@@ -1126,7 +1126,7 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
     results=[]
     all_raw={}
 
-    # Hent alle aktier i chunks af 50 – identisk med hvad der virkede
+    # Hent alle aktier i chunks af 50
     for i in range(0,len(tickers),50):
         chunk=tickers[i:i+50]
         try:
@@ -1138,6 +1138,19 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
                     if len(df)>=210: all_raw[t]=df
                 except: pass
         except: pass
+
+    # Hent reference indeks separat til RS Trend beregning
+    ref_list = list(set(REGION_INDEX.values()))
+    try:
+        ref_raw = yf.download(ref_list, period='1y', interval='1d',
+                              group_by='ticker', auto_adjust=True, progress=False, threads=True)
+        for t in ref_list:
+            if t in all_raw: continue  # allerede hentet
+            try:
+                df = (ref_raw[t] if len(ref_list)>1 else ref_raw).dropna()
+                if len(df)>=63: all_raw[t]=df
+            except: pass
+    except: pass
 
     rs_raws={t:calc_ibd_rs_raw(get_col(df,'Close')) for t,df in all_raw.items()}
     valid_rs={k:v for k,v in rs_raws.items() if v is not None}
