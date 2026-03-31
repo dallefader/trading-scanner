@@ -1809,8 +1809,8 @@ def main():
     )
 
     # TABS
-    tabs=st.tabs(["▸ FORSIDE","▸ SCANNER","▸ BENCHMARK","▸ POSITIONER","▸ WATCHLIST","▸ CHARTS","▸ RS ANALYSE","▸ PLAYBOOK"])
-    tab1,tab2,tab3,tab4,tab5,tab6,tab7,tab8=tabs
+    tabs=st.tabs(["▸ FORSIDE","▸ SCANNER","▸ BENCHMARK","▸ POSITIONER","▸ WATCHLIST","▸ CHARTS","▸ RS ANALYSE","▸ PLAYBOOK","▸ DEBUG"])
+    tab1,tab2,tab3,tab4,tab5,tab6,tab7,tab8,tab9=tabs
 
     # ═══════════════════════════════════════════
     # TAB 1: FORSIDE – BLOOMBERG STYLE
@@ -2708,6 +2708,54 @@ Typiske tegn:
 <span style='color:#005f12;font-size:0.72rem'> — {full}</span><br>
 <span style='color:#00cc33'>{explanation}</span>
 </div>""", unsafe_allow_html=True)
+
+    # ═══════════════════════════════════════════
+    # TAB 9: DEBUG
+    # ═══════════════════════════════════════════
+    with tab9:
+        st.markdown("### DEBUG")
+
+        if st.button("🔍 TEST RS BEREGNING (AAPL vs SPY)"):
+            import yfinance as yf
+            raw = yf.download(['AAPL','SPY'], period='1y', interval='1d',
+                              group_by='ticker', auto_adjust=True, progress=False)
+            st.write("MultiIndex:", isinstance(raw.columns, pd.MultiIndex))
+            st.write("Level 0:", raw.columns.get_level_values(0).unique().tolist())
+            st.write("Level 1:", raw.columns.get_level_values(1).unique().tolist())
+
+            df_aapl = raw['AAPL']
+            df_spy  = raw['SPY']
+            st.write("AAPL kolonner:", df_aapl.columns.tolist())
+            st.write("AAPL rækker:", len(df_aapl))
+
+            c_aapl = get_col(df_aapl, 'Close')
+            c_spy  = get_col(df_spy,  'Close')
+            st.write(f"AAPL Close array len: {len(c_aapl)}, seneste: {c_aapl[-1] if len(c_aapl)>0 else 'TOM'}")
+            st.write(f"SPY Close array len:  {len(c_spy)},  seneste: {c_spy[-1]  if len(c_spy)>0  else 'TOM'}")
+
+            if len(c_aapl)>=63 and len(c_spy)>=63:
+                rs_now  = float(c_aapl[-1])  / float(c_spy[-1])
+                rs_past = float(c_aapl[-63]) / float(c_spy[-63])
+                direction = 'UP' if rs_now>rs_past else ('DOWN' if rs_now<rs_past else 'FLAT')
+                st.success(f"RS beregning OK → AAPL vs SPY = **{direction}** (nu:{rs_now:.4f} / 63d:{rs_past:.4f})")
+            else:
+                st.error("Ikke nok data til RS beregning!")
+
+            # Test calc_ibd_rs_raw
+            rs_raw = calc_ibd_rs_raw(c_aapl)
+            st.write(f"calc_ibd_rs_raw(AAPL): {rs_raw}")
+
+        if not scan.empty:
+            st.write(f"**Aktier i scan:** {len(scan)}")
+            st.write(f"**RS Rank > 0:** {(scan['rs_rank']>0).sum()}")
+            st.write(f"**RS Trend UP:** {(scan['rs_t']=='UP').sum()}")
+            st.write(f"**RS Trend DOWN:** {(scan['rs_t']=='DOWN').sum()}")
+            st.write(f"**RS Trend FLAT:** {(scan['rs_t']=='FLAT').sum()}")
+            st.write(f"**EXIT:** {(scan['sell']=='EXIT').sum()}")
+            st.write(f"**REDUCE:** {(scan['sell']=='REDUCE').sum()}")
+            # Vis 5 tilfældige aktier med deres RS data
+            sample = scan[scan['sector']!='REF'][['ticker','rs_t','rs_rank','price','sma200','setup','buy','sell']].head(10)
+            st.dataframe(sample)
 
 if __name__=='__main__':
     main()
