@@ -1248,35 +1248,62 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
 def fetch_earnings_dates(tickers_tuple):
     """
     Henter næste earnings dato for alle tickers via yfinance.
+    Bruger earnings_dates (mere pålidelig end calendar).
     Returnerer dict: { ticker: datetime or None }
-    Cachet 1 time – earnings ændres sjældent i løbet af en dag.
+    Cachet 1 time.
     """
     tickers = list(tickers_tuple)
     earnings_map = {}
     today = pd.Timestamp.now(tz='UTC').normalize()
 
     for ticker in tickers:
+        ed = None
         try:
             tk = yf.Ticker(ticker)
-            cal = tk.calendar
-            if cal is not None and not cal.empty:
-                # yfinance returnerer calendar som DataFrame med kolonner som index
-                if 'Earnings Date' in cal.index:
-                    val = cal.loc['Earnings Date']
-                    # Kan være en liste eller enkelt værdi
-                    if hasattr(val, '__iter__') and not isinstance(val, str):
-                        dates = [pd.Timestamp(d, tz='UTC') for d in val if pd.notna(d)]
-                        future = [d for d in dates if d >= today]
-                        earnings_map[ticker] = min(future) if future else None
-                    else:
-                        d = pd.Timestamp(val, tz='UTC')
-                        earnings_map[ticker] = d if d >= today else None
-                else:
-                    earnings_map[ticker] = None
-            else:
-                earnings_map[ticker] = None
+
+            # Metode 1: earnings_dates (nyeste yfinance)
+            try:
+                edf = tk.earnings_dates
+                if edf is not None and not edf.empty:
+                    edf.index = pd.to_datetime(edf.index, utc=True)
+                    future = edf[edf.index.normalize() >= today]
+                    if not future.empty:
+                        ed = future.index.min()
+            except:
+                pass
+
+            # Metode 2: calendar fallback
+            if ed is None:
+                try:
+                    cal = tk.calendar
+                    if cal is not None:
+                        # Nyere yfinance: calendar er en dict
+                        if isinstance(cal, dict):
+                            val = cal.get('Earnings Date') or cal.get('earningsDate')
+                            if val:
+                                if isinstance(val, (list, tuple)):
+                                    dates = [pd.Timestamp(d, tz='UTC') for d in val if pd.notna(d)]
+                                else:
+                                    dates = [pd.Timestamp(val, tz='UTC')]
+                                future = [d for d in dates if d.normalize() >= today]
+                                ed = min(future) if future else None
+                        # Ældre yfinance: calendar er DataFrame
+                        elif hasattr(cal, 'index') and 'Earnings Date' in cal.index:
+                            val = cal.loc['Earnings Date']
+                            if hasattr(val, '__iter__') and not isinstance(val, str):
+                                dates = [pd.Timestamp(d, tz='UTC') for d in val if pd.notna(d)]
+                                future = [d for d in dates if d.normalize() >= today]
+                                ed = min(future) if future else None
+                            else:
+                                d = pd.Timestamp(val, tz='UTC')
+                                ed = d if d.normalize() >= today else None
+                except:
+                    pass
+
         except:
-            earnings_map[ticker] = None
+            pass
+
+        earnings_map[ticker] = ed
 
     return earnings_map
 
