@@ -2787,5 +2787,24 @@ Typiske tegn:
             sample = scan[scan['sector']!='REF'][['ticker','rs_t','rs_rank','price','sma200','setup','buy','sell']].head(10)
             st.dataframe(sample)
 
+        if st.button("🔍 TEST FULD UNIVERSE (første 150)"):
+            test_tickers = [t[0] for t in UNIVERSE[:150]]
+            counts = {}
+            for i in range(0, len(test_tickers), 50):
+                chunk = test_tickers[i:i+50]
+                try:
+                    raw = yf.download(chunk, period='1y', interval='1d',
+                                      group_by='ticker', auto_adjust=True, progress=False, threads=True)
+                    ok = 0
+                    for t in chunk:
+                        try:
+                            df = raw[t].dropna()
+                            if len(df)>=210: ok+=1
+                        except: pass
+                    counts[f"chunk_{i//50+1} ({chunk[0]}...)"] = f"{ok}/{len(chunk)}"
+                except Exception as e:
+                    counts[f"chunk_{i//50+1}"] = f"FEJL: {str(e)[:50]}"
+            st.write("Chunk resultater:", counts)
+
 if __name__=='__main__':
     main()
