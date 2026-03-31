@@ -1073,7 +1073,7 @@ REGION_INDEX = {
     'Crypto':      'BITO',
 }
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=1, show_spinner=False)
 def fetch_reference_indices():
     """Hent alle lokale reference indeks til RS Trend beregning"""
     unique_indices = list(set(REGION_INDEX.values()))
@@ -1118,7 +1118,7 @@ def fetch_market_data():
     except: pass
     return rows
 
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=1, show_spinner=False)
 def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
     universe=list(universe_tuple)
     tickers=[t[0] for t in universe]
@@ -1491,7 +1491,7 @@ def enrich_positions(positions,scan):
 # ══════════════════════════════════════════════════════════════
 # CHART
 # ══════════════════════════════════════════════════════════════
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=1, show_spinner=False)
 def get_chart_data(ticker):
     return yf.download(ticker,period='1y',interval='1d',auto_adjust=True,progress=False).dropna()
 
