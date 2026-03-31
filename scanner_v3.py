@@ -1167,26 +1167,32 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
     results=[]
     all_raw={}
 
-    # Inkluder reference indeks i download så RS Trend kan beregnes
-    ref_tickers = list(set(REGION_INDEX.values()))
-    all_tickers_to_fetch = list(set(tickers + ref_tickers))
-
     # Hent alle aktier i chunks af 50
-    for i in range(0,len(all_tickers_to_fetch),50):
-        chunk=all_tickers_to_fetch[i:i+50]
+    for i in range(0,len(tickers),50):
+        chunk=tickers[i:i+50]
         try:
             raw=yf.download(chunk,period='1y',interval='1d',
                             group_by='ticker',auto_adjust=True,progress=False,threads=True)
             for t in chunk:
                 try:
-                    if len(chunk)==1:
-                        df = raw.dropna() if not isinstance(raw.columns, pd.MultiIndex) else normalize_df(raw, t)
-                    else:
+                    df = normalize_df(raw, t) if len(chunk)>1 else raw.dropna()
+                    if isinstance(df.columns, pd.MultiIndex):
                         df = normalize_df(raw, t)
-                    min_bars = 60 if t in ref_tickers else 210
-                    if len(df)>=min_bars: all_raw[t]=df
+                    if len(df)>=210: all_raw[t]=df
                 except: pass
         except: pass
+
+    # Hent reference indeks separat
+    ref_tickers = list(set(REGION_INDEX.values()))
+    try:
+        ref_raw = yf.download(ref_tickers, period='1y', interval='1d',
+                              group_by='ticker', auto_adjust=True, progress=False, threads=True)
+        for t in ref_tickers:
+            try:
+                df = normalize_df(ref_raw, t) if len(ref_tickers)>1 else ref_raw.dropna()
+                if len(df)>=64: all_raw[t]=df
+            except: pass
+    except: pass
 
     rs_raws={}
     for t,df in all_raw.items():
