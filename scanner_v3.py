@@ -902,6 +902,13 @@ UNIVERSE = [
 # ══════════════════════════════════════════════════════════════
 # INDIKATORER
 # ══════════════════════════════════════════════════════════════
+def safe_col(df, col):
+    """Håndterer både normal og MultiIndex DataFrame fra yfinance"""
+    if isinstance(df.columns, pd.MultiIndex):
+        # MultiIndex: (kolonne, ticker) – tag første ticker
+        return df[col].iloc[:, 0].squeeze().values
+    return df[col].squeeze().values
+
 def sma(arr, n):
     if arr is None or len(arr)<n: return None
     return float(np.mean(arr[-n:]))
@@ -1082,7 +1089,7 @@ def fetch_reference_indices():
             try:
                 df = (raw[idx] if len(unique_indices)>1 else raw).dropna()
                 if len(df) >= 25:
-                    closes[idx] = df['Close'].squeeze().values
+                    closes[idx] = safe_col(df,'Close')
             except: pass
     except: pass
     return closes
@@ -1098,7 +1105,7 @@ def fetch_market_data():
             try:
                 df=(raw[t] if len(all_tickers)>1 else raw).dropna()
                 if len(df)<5: continue
-                c=df['Close'].squeeze().values
+                c=safe_col(df,'Close')
                 p=float(c[-1]); prev=float(c[-2])
                 d5=float(c[-6]) if len(c)>5 else prev
                 d30=float(c[-31]) if len(c)>30 else prev
@@ -1135,15 +1142,15 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
                 except: pass
         except: pass
 
-    rs_raws={t:calc_ibd_rs_raw(df['Close'].squeeze().values) for t,df in all_raw.items()}
+    rs_raws={t:calc_ibd_rs_raw(safe_col(df,'Close')) for t,df in all_raw.items()}
     valid_rs={k:v for k,v in rs_raws.items() if v is not None}
     rs_ranks=pd.Series(valid_rs).rank(pct=True).multiply(99).round(0).astype(int) if valid_rs else pd.Series()
 
     for ticker,df in all_raw.items():
         try:
             info=info_map.get(ticker,(ticker,ticker,'Unknown','Unknown','CORE'))
-            c=df['Close'].squeeze().values; h=df['High'].squeeze().values
-            l=df['Low'].squeeze().values;   v=df['Volume'].squeeze().values
+            c=safe_col(df,'Close'); h=safe_col(df,'High')
+            l=safe_col(df,'Low');   v=safe_col(df,'Volume')
             n=len(c)
             if n<210: continue
             price=float(c[-1])
@@ -1177,7 +1184,7 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
             # Brug lokalt indeks hvis det er i all_raw, ellers SPY, ellers FLAT
             ref_df = all_raw.get(local_idx) or all_raw.get('SPY')
             if ref_df is not None:
-                ref_closes = ref_df['Close'].squeeze().values
+                ref_closes = ref_safe_col(df,'Close')
                 if len(ref_closes)>=21 and n>=21:
                     ref_now  = float(ref_closes[-1])
                     ref_past = float(ref_closes[-21])
@@ -1595,9 +1602,9 @@ def make_score_histogram(scan_df):
 
 def plot_chart(ticker,df,signal=''):
     if df.empty: return go.Figure()
-    c=df['Close'].squeeze().values; h=df['High'].squeeze().values
-    l=df['Low'].squeeze().values;   o=df['Open'].squeeze().values
-    v=df['Volume'].squeeze().values; idx=df.index
+    c=safe_col(df,'Close'); h=safe_col(df,'High')
+    l=safe_col(df,'Low');   o=safe_col(df,'Open')
+    v=safe_col(df,'Volume'); idx=df.index
     s20=pd.Series(c).rolling(20).mean().values
     s60=pd.Series(c).rolling(60).mean().values
     s200=pd.Series(c).rolling(200).mean().values
