@@ -905,12 +905,21 @@ UNIVERSE = [
 def safe_col(df, col):
     """Håndterer både normal og MultiIndex DataFrame fra yfinance"""
     try:
-        if isinstance(df.columns, pd.MultiIndex):
-            if col in df.columns.get_level_values(0):
-                return df[col].iloc[:, 0].values
-            if col in df.columns.get_level_values(1):
-                return df.xs(col, axis=1, level=1).iloc[:, 0].values
-        return df[col].squeeze().values
+        # Allerede normaliseret DataFrame – direkte adgang
+        if not isinstance(df.columns, pd.MultiIndex):
+            if col in df.columns:
+                return df[col].values
+            # Prøv case-insensitive
+            for c in df.columns:
+                if str(c).lower() == col.lower():
+                    return df[c].values
+            return np.array([])
+        # MultiIndex – burde ikke ske efter normalize_df, men håndter det
+        if col in df.columns.get_level_values(0):
+            return df[col].iloc[:, 0].values
+        if col in df.columns.get_level_values(1):
+            return df.xs(col, axis=1, level=1).iloc[:, 0].values
+        return np.array([])
     except:
         return np.array([])
 
@@ -1173,7 +1182,14 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
                 except: pass
         except: pass
 
-    rs_raws={t:calc_ibd_rs_raw(safe_col(df,'Close')) for t,df in all_raw.items()}
+    rs_raws={}
+    for t,df in all_raw.items():
+        try:
+            c = safe_col(df,'Close')
+            if len(c) >= 252:
+                rs_raws[t] = calc_ibd_rs_raw(c)
+        except:
+            pass
     valid_rs={k:v for k,v in rs_raws.items() if v is not None}
     rs_ranks=pd.Series(valid_rs).rank(pct=True).multiply(99).round(0).astype(int) if valid_rs else pd.Series()
 
