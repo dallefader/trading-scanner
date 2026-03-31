@@ -1125,6 +1125,7 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
     info_map={t[0]:t for t in universe}
     results=[]
     all_raw={}
+    ref_raw_map={}  # Separat dict til reference indeks
 
     # Hent alle aktier i chunks af 50
     for i in range(0,len(tickers),50):
@@ -1139,16 +1140,15 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
                 except: pass
         except: pass
 
-    # Hent reference indeks separat til RS Trend beregning
+    # Hent reference indeks separat – gemmes i ref_raw_map, IKKE all_raw
     ref_list = list(set(REGION_INDEX.values()))
     try:
-        ref_raw = yf.download(ref_list, period='1y', interval='1d',
-                              group_by='ticker', auto_adjust=True, progress=False, threads=True)
+        ref_dl = yf.download(ref_list, period='1y', interval='1d',
+                             group_by='ticker', auto_adjust=True, progress=False, threads=True)
         for t in ref_list:
-            if t in all_raw: continue  # allerede hentet
             try:
-                df = (ref_raw[t] if len(ref_list)>1 else ref_raw).dropna()
-                if len(df)>=63: all_raw[t]=df
+                df = (ref_dl[t] if len(ref_list)>1 else ref_dl).dropna()
+                if len(df)>=63: ref_raw_map[t]=df
             except: pass
     except: pass
 
@@ -1192,7 +1192,7 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
             region = info[3] if len(info)>3 else 'US'
             local_idx = REGION_INDEX.get(region, 'SPY')
             # Brug lokalt indeks hvis det er i all_raw, ellers SPY, ellers FLAT
-            ref_df = all_raw.get(local_idx) or all_raw.get('SPY')
+            ref_df = ref_raw_map.get(local_idx) or ref_raw_map.get('SPY')
             if ref_df is not None:
                 ref_closes = get_col(ref_df,'Close')
                 if ref_closes is not None and len(ref_closes)>=63 and n>=63:
