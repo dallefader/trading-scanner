@@ -472,11 +472,12 @@ UNIVERSE = [
     ('ENEL.MI','Enel','Utilities','Italy','EXTENDED'),
     ('ENI.MI','ENI','Energy','Italy','EXTENDED'),
     ('UCG.MI','UniCredit','Financials','Italy','EXTENDED'),
+    ('IDR.MC', 'Indra Sistemas', 'Tech', 'Spain', 'EXTENDED'),
 
     # ── FINLAND ────────────────────────────────────────────
     ('NOKIA.HE','Nokia','Tech','Finland','EXTENDED'),
     ('KNEBV.HE','Kone','Industrials','Finland','EXTENDED'),
-
+    ('ITX.MC', 'Inditex', 'Consumer', 'Spain', 'EXTENDED'),
     # ── JAPAN ──────────────────────────────────────────────
     ('7203.T','Toyota','Consumer','Japan','EXTENDED'),
     ('6758.T','Sony','Tech','Japan','EXTENDED'),
