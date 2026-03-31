@@ -1135,7 +1135,13 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
                             group_by='ticker',auto_adjust=True,progress=False,threads=True)
             for t in chunk:
                 try:
-                    df=(raw[t] if len(chunk)>1 else raw).dropna()
+                    if len(chunk)==1:
+                        df=raw.dropna()
+                    elif isinstance(raw.columns, pd.MultiIndex):
+                        # Streamlit Cloud: MultiIndex er (Ticker, Price)
+                        df=raw[t].dropna()
+                    else:
+                        df=raw[t].dropna()
                     if len(df)>=210: all_raw[t]=df
                 except: pass
         except: pass
@@ -2728,32 +2734,45 @@ Typiske tegn:
     with tab9:
         st.markdown("### DEBUG")
 
+        if st.button("🔍 TEST CHUNK DOWNLOAD (50 aktier)"):
+            chunk = ['AAPL','MSFT','NVDA','GOOGL','META','AMZN','TSLA','JPM','V','MA',
+                     'UNH','HD','COST','ABBV','CRM','AMD','AVGO','LLY','MRK','PEP',
+                     'KO','PG','WMT','DIS','NFLX','PYPL','ADBE','INTC','QCOM','TXN',
+                     'HON','GE','CAT','BA','RTX','LMT','NOC','UPS','FDX','DE',
+                     'XOM','CVX','COP','DVN','EOG','OXY','SLB','HAL','PSX','VLO']
+            raw = yf.download(chunk, period='1y', interval='1d',
+                              group_by='ticker', auto_adjust=True, progress=False, threads=True)
+            st.write("Type:", type(raw.columns).__name__)
+            st.write("Level 0 sample:", raw.columns.get_level_values(0).unique()[:5].tolist())
+            st.write("Level 1 sample:", raw.columns.get_level_values(1).unique().tolist())
+
+            success, fail = [], []
+            for t in chunk:
+                try:
+                    df = raw[t].dropna()
+                    if len(df)>=210:
+                        success.append(t)
+                    else:
+                        fail.append(f"{t}(kun {len(df)}d)")
+                except Exception as e:
+                    fail.append(f"{t}(ERR:{str(e)[:30]})")
+
+            st.success(f"✓ Virker: {len(success)} aktier")
+            st.error(f"✗ Fejler: {len(fail)} — {fail[:10]}")
+
         if st.button("🔍 TEST RS BEREGNING (AAPL vs SPY)"):
             raw = yf.download(['AAPL','SPY'], period='1y', interval='1d',
                               group_by='ticker', auto_adjust=True, progress=False)
-            st.write("MultiIndex:", isinstance(raw.columns, pd.MultiIndex))
-            st.write("Level 0:", raw.columns.get_level_values(0).unique().tolist())
-            st.write("Level 1:", raw.columns.get_level_values(1).unique().tolist())
-
             df_aapl = raw['AAPL']
             df_spy  = raw['SPY']
-            st.write("AAPL kolonner:", df_aapl.columns.tolist())
-            st.write("AAPL rækker:", len(df_aapl))
-
             c_aapl = get_col(df_aapl, 'Close')
             c_spy  = get_col(df_spy,  'Close')
-            st.write(f"AAPL Close array len: {len(c_aapl)}, seneste: {c_aapl[-1] if len(c_aapl)>0 else 'TOM'}")
-            st.write(f"SPY Close array len:  {len(c_spy)},  seneste: {c_spy[-1]  if len(c_spy)>0  else 'TOM'}")
-
+            st.write(f"AAPL: {len(c_aapl)} rækker, SPY: {len(c_spy)} rækker")
             if len(c_aapl)>=63 and len(c_spy)>=63:
                 rs_now  = float(c_aapl[-1])  / float(c_spy[-1])
                 rs_past = float(c_aapl[-63]) / float(c_spy[-63])
                 direction = 'UP' if rs_now>rs_past else ('DOWN' if rs_now<rs_past else 'FLAT')
-                st.success(f"RS beregning OK → AAPL vs SPY = **{direction}** (nu:{rs_now:.4f} / 63d:{rs_past:.4f})")
-            else:
-                st.error("Ikke nok data til RS beregning!")
-
-            # Test calc_ibd_rs_raw
+                st.success(f"AAPL vs SPY = **{direction}**")
             rs_raw = calc_ibd_rs_raw(c_aapl)
             st.write(f"calc_ibd_rs_raw(AAPL): {rs_raw}")
 
@@ -2765,7 +2784,6 @@ Typiske tegn:
             st.write(f"**RS Trend FLAT:** {(scan['rs_t']=='FLAT').sum()}")
             st.write(f"**EXIT:** {(scan['sell']=='EXIT').sum()}")
             st.write(f"**REDUCE:** {(scan['sell']=='REDUCE').sum()}")
-            # Vis 5 tilfældige aktier med deres RS data
             sample = scan[scan['sector']!='REF'][['ticker','rs_t','rs_rank','price','sma200','setup','buy','sell']].head(10)
             st.dataframe(sample)
 
