@@ -1183,7 +1183,8 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
                         df = raw.dropna() if not isinstance(raw.columns, pd.MultiIndex) else normalize_df(raw, t)
                     else:
                         df = normalize_df(raw, t)
-                    if len(df)>=60: all_raw[t]=df  # ref indeks behøver kun 60 dage
+                    min_bars = 60 if t in ref_tickers else 210
+                    if len(df)>=min_bars: all_raw[t]=df
                 except: pass
         except: pass
 
