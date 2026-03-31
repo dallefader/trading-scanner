@@ -902,49 +902,17 @@ UNIVERSE = [
 # ══════════════════════════════════════════════════════════════
 # INDIKATORER
 # ══════════════════════════════════════════════════════════════
-def safe_col(df, col):
-    """Håndterer både normal og MultiIndex DataFrame fra yfinance"""
+def get_col(df, col):
+    """Henter kolonne fra DataFrame uanset yfinance version/MultiIndex struktur"""
     try:
-        # Allerede normaliseret DataFrame – direkte adgang
-        if not isinstance(df.columns, pd.MultiIndex):
-            if col in df.columns:
-                return df[col].values
-            # Prøv case-insensitive
-            for c in df.columns:
-                if str(c).lower() == col.lower():
-                    return df[c].values
-            return np.array([])
-        # MultiIndex – burde ikke ske efter normalize_df, men håndter det
-        if col in df.columns.get_level_values(0):
-            return df[col].iloc[:, 0].values
-        if col in df.columns.get_level_values(1):
-            return df.xs(col, axis=1, level=1).iloc[:, 0].values
-        return np.array([])
+        s = df[col]
+        if hasattr(s, 'squeeze'):
+            s = s.squeeze()
+        if hasattr(s, 'values'):
+            return s.values
+        return s
     except:
-        return np.array([])
-
-def normalize_df(raw, ticker):
-    """
-    Normaliserer yfinance output til standard DataFrame.
-    På Streamlit Cloud er MultiIndex (Ticker, Price) — ticker i level 0.
-    """
-    try:
-        if isinstance(raw.columns, pd.MultiIndex):
-            lvl0 = raw.columns.get_level_values(0).tolist()
-            lvl1 = raw.columns.get_level_values(1).tolist()
-            # Streamlit Cloud / ny yfinance: (Ticker, Price) – ticker i level 0
-            if ticker in lvl0:
-                return raw[ticker].dropna()
-            # Alternativ: (Price, Ticker) – ticker i level 1
-            if ticker in lvl1:
-                return raw.xs(ticker, axis=1, level=1).dropna()
-        else:
-            if ticker in raw.columns:
-                return raw[ticker].dropna()
-            return raw.dropna()
-    except:
-        pass
-    return pd.DataFrame()
+        return None
 
 def sma(arr, n):
     if arr is None or len(arr)<n: return None
@@ -1015,17 +983,11 @@ def derive_states(price,sma20,sma60,sma200,rsi,rsi_trend,low5,dist_h20,
     ma=(br and vol_ratio is not None and vol_ratio>=1.10
         and rsi is not None and 50<=rsi<=80 and liq_pass and market_regime!='RISK_OFF')
     ext=(rsi is not None and rsi>84) or price>sma20*1.14
-
-    # ── MOMENTUM-KORREKT SVAGHEDSLOGIK ──
-    # rsi_recovering kræver nu at RSI faktisk er over 40 OG stiger
     rsi_recovering = (rsi_trend == 'UP' and rsi is not None and rsi > 40)
-
     fs = (rs_trend == 'DOWN'
           and price < sma200
           and (sma20 < sma60 or (rsi is not None and rsi < 36))
           and not rsi_recovering)
-
-    # WEAKENING: RS svækkes + under SMA20
     wk = (rs_trend == 'DOWN' and price < sma20 and not fs)
 
     ss=0
@@ -1051,25 +1013,22 @@ def derive_states(price,sma20,sma60,sma200,rsi,rsi_trend,low5,dist_h20,
 
     pri=max(0,min(100,ts+ss-rp))
 
-    if fs:      st_='FAILED_SETUP'
-    elif ext:   st_='EXTENDED'
-    elif ma:    st_='MOMENTUM_ACTIVE'
-    elif br:    st_='BREAKOUT_READY'
-    elif ib:    st_='INSTITUTIONAL_BUILD'
+    if fs:   st_='FAILED_SETUP'
+    elif ext: st_='EXTENDED'
+    elif ma:  st_='MOMENTUM_ACTIVE'
+    elif br:  st_='BREAKOUT_READY'
+    elif ib:  st_='INSTITUTIONAL_BUILD'
     elif accum: st_='ACCUMULATION'
-    elif wk:    st_='WEAKENING'
-    else:       st_='NO_SETUP'
+    elif wk:  st_='WEAKENING'
+    else:     st_='NO_SETUP'
 
     am={'ACCUMULATION':'STARTER','INSTITUTIONAL_BUILD':'BUILD',
         'BREAKOUT_READY':'BREAKOUT_ENTRY','MOMENTUM_ACTIVE':'MOMENTUM_ENTRY',
         'EXTENDED':'EXTENDED','WEAKENING':'REDUCE','FAILED_SETUP':'EXIT'}
     ac=am.get(st_,'WATCHLIST')
-
-    # I NEUTRAL/RISK_ON: downgrade EXIT → REDUCE hvis RSI ikke i frit fald
     if ac=='EXIT' and market_regime!='RISK_OFF' and rsi is not None and rsi>30:
         ac='REDUCE'
-    if market_regime=='RISK_OFF' and ac in('BUILD','BREAKOUT_ENTRY','MOMENTUM_ENTRY'):
-        ac='STARTER'
+    if market_regime=='RISK_OFF' and ac in('BUILD','BREAKOUT_ENTRY','MOMENTUM_ENTRY'): ac='STARTER'
 
     bm={'STARTER':'STARTER BUY','BUILD':'BUILD POSITION',
         'BREAKOUT_ENTRY':'BUY BREAKOUT','MOMENTUM_ENTRY':'BUY NOW','EXTENDED':'EXTENDED — WAIT'}
@@ -1125,9 +1084,9 @@ def fetch_reference_indices():
                          group_by='ticker', auto_adjust=True, progress=False, threads=True)
         for idx in unique_indices:
             try:
-                df = normalize_df(raw, idx) if len(unique_indices)>1 else raw.dropna()
+                df = (raw[idx] if len(unique_indices)>1 else raw).dropna()
                 if len(df) >= 25:
-                    closes[idx] = safe_col(df,'Close')
+                    closes[idx] = get_col(df,'Close')
             except: pass
     except: pass
     return closes
@@ -1141,9 +1100,9 @@ def fetch_market_data():
                         group_by='ticker',auto_adjust=True,progress=False)
         for t in all_tickers:
             try:
-                df = normalize_df(raw, t) if len(all_tickers)>1 else raw.dropna()
+                df=(raw[t] if len(all_tickers)>1 else raw).dropna()
                 if len(df)<5: continue
-                c=safe_col(df,'Close')
+                c=get_col(df,'Close')
                 p=float(c[-1]); prev=float(c[-2])
                 d5=float(c[-6]) if len(c)>5 else prev
                 d30=float(c[-31]) if len(c)>30 else prev
@@ -1167,7 +1126,7 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
     results=[]
     all_raw={}
 
-    # Hent alle aktier i chunks af 50
+    # Hent alle aktier i chunks af 50 – identisk med hvad der virkede
     for i in range(0,len(tickers),50):
         chunk=tickers[i:i+50]
         try:
@@ -1175,42 +1134,20 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
                             group_by='ticker',auto_adjust=True,progress=False,threads=True)
             for t in chunk:
                 try:
-                    df = normalize_df(raw, t) if len(chunk)>1 else raw.dropna()
-                    if isinstance(df.columns, pd.MultiIndex):
-                        df = normalize_df(raw, t)
+                    df=(raw[t] if len(chunk)>1 else raw).dropna()
                     if len(df)>=210: all_raw[t]=df
                 except: pass
         except: pass
 
-    # Hent reference indeks separat
-    ref_tickers = list(set(REGION_INDEX.values()))
-    try:
-        ref_raw = yf.download(ref_tickers, period='1y', interval='1d',
-                              group_by='ticker', auto_adjust=True, progress=False, threads=True)
-        for t in ref_tickers:
-            try:
-                df = normalize_df(ref_raw, t) if len(ref_tickers)>1 else ref_raw.dropna()
-                if len(df)>=64: all_raw[t]=df
-            except: pass
-    except: pass
-
-    rs_raws={}
-    for t,df in all_raw.items():
-        if t not in tickers: continue  # spring reference indeks over
-        try:
-            c = safe_col(df,'Close')
-            if len(c) >= 252:
-                rs_raws[t] = calc_ibd_rs_raw(c)
-        except:
-            pass
+    rs_raws={t:calc_ibd_rs_raw(get_col(df,'Close')) for t,df in all_raw.items()}
     valid_rs={k:v for k,v in rs_raws.items() if v is not None}
     rs_ranks=pd.Series(valid_rs).rank(pct=True).multiply(99).round(0).astype(int) if valid_rs else pd.Series()
 
     for ticker,df in all_raw.items():
         try:
             info=info_map.get(ticker,(ticker,ticker,'Unknown','Unknown','CORE'))
-            c=safe_col(df,'Close'); h=safe_col(df,'High')
-            l=safe_col(df,'Low');   v=safe_col(df,'Volume')
+            c=get_col(df,'Close'); h=get_col(df,'High')
+            l=get_col(df,'Low');   v=get_col(df,'Volume')
             n=len(c)
             if n<210: continue
             price=float(c[-1])
@@ -1244,8 +1181,8 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
             # Brug lokalt indeks hvis det er i all_raw, ellers SPY, ellers FLAT
             ref_df = all_raw.get(local_idx) or all_raw.get('SPY')
             if ref_df is not None:
-                ref_closes = safe_col(ref_df,'Close')
-                if len(ref_closes)>=64 and n>=64:
+                ref_closes = get_col(ref_df,'Close')
+                if ref_closes is not None and len(ref_closes)>=63 and n>=63:
                     ref_now  = float(ref_closes[-1])
                     ref_past = float(ref_closes[-63])
                     if ref_now>0 and ref_past>0:
@@ -1379,7 +1316,7 @@ def load_json(f): return json.load(open(f)) if os.path.exists(f) else []
 def save_json(f,d): json.dump(d,open(f,'w'),indent=2,default=str)
 
 # ══════════════════════════════════════════════════════════════
-# CUSTOM UNIVERSE – tilføj aktier via UI
+# CUSTOM UNIVERSE
 # ══════════════════════════════════════════════════════════════
 def load_custom_universe():
     raw = load_json(CUSTOM_UNIVERSE_FILE)
@@ -1441,15 +1378,6 @@ def fetch_earnings_dates(tickers_tuple):
                                 dates = [pd.Timestamp(d,tz='UTC') for d in dates if pd.notna(d)]
                                 future = [d for d in dates if d.normalize()>=today]
                                 ed = min(future) if future else None
-                        elif hasattr(cal,'index') and 'Earnings Date' in cal.index:
-                            val = cal.loc['Earnings Date']
-                            if hasattr(val,'__iter__') and not isinstance(val,str):
-                                dates = [pd.Timestamp(d,tz='UTC') for d in val if pd.notna(d)]
-                                future = [d for d in dates if d.normalize()>=today]
-                                ed = min(future) if future else None
-                            else:
-                                d = pd.Timestamp(val,tz='UTC')
-                                ed = d if d.normalize()>=today else None
                 except: pass
         except: pass
         earnings_map[ticker] = ed
@@ -1461,7 +1389,7 @@ def calc_earnings_fields(ticker, earnings_map):
     if ed is None:
         return {'earnings_date':'N/A','days_to_earnings':None,'earnings_flag':'N/A','has_earnings':False}
     days = (ed.normalize()-today).days
-    if days < 0:   flag = 'N/A'
+    if days < 0:    flag = 'N/A'
     elif days <= 2: flag = 'RISK'
     elif days <= 7: flag = 'SOON'
     elif days <= 20: flag = 'UPCOMING'
@@ -1485,7 +1413,7 @@ SECTOR_PEERS = {
     'Healthcare':  ['LLY','UNH','REGN','VRTX','JNJ','MRK','ABBV','AMGN','GILD','BMY'],
     'Consumer':    ['AMZN','TSLA','NFLX','COST','HD','WMT','NKE','SBUX','MCD','CMG'],
     'Industrials': ['CAT','GE','RTX','LMT','NOC','BA','HON','GEV','PWR','ETN'],
-    'Materials':   ['FCX','NUE','LIN','ALB','NEM','GOLD','WPM','FNV','FCX','MP'],
+    'Materials':   ['FCX','NUE','LIN','ALB','NEM','GOLD','WPM','FNV','MP'],
     'Utilities':   ['NEE','DUK','SO','AEP','EXC','PCG'],
     'RealEstate':  ['PLD','AMT','EQIX','DLR','CCI','SPG','O'],
     'Momentum':    ['MARA','RIOT','PLTR','RKLB','IONQ','CRWD','NET'],
@@ -1495,10 +1423,8 @@ SECTOR_PEERS = {
 def calc_rotation(df, positions):
     if df.empty or not positions:
         df['is_in_portfolio'] = False
-        df['best_peer'] = None
-        df['best_peer_score'] = None
-        df['rotation_score'] = None
-        df['rotation_action'] = None
+        df['best_peer'] = None; df['best_peer_score'] = None
+        df['rotation_score'] = None; df['rotation_action'] = None
         return df
     portfolio_tickers = {p['ticker'] for p in positions}
     score_map = dict(zip(df['ticker'], df['score']))
@@ -1662,9 +1588,9 @@ def make_score_histogram(scan_df):
 
 def plot_chart(ticker,df,signal=''):
     if df.empty: return go.Figure()
-    c=safe_col(df,'Close'); h=safe_col(df,'High')
-    l=safe_col(df,'Low');   o=safe_col(df,'Open')
-    v=safe_col(df,'Volume'); idx=df.index
+    c=get_col(df,'Close'); h=get_col(df,'High')
+    l=get_col(df,'Low');   o=get_col(df,'Open')
+    v=get_col(df,'Volume'); idx=df.index
     s20=pd.Series(c).rolling(20).mean().values
     s60=pd.Series(c).rolling(60).mean().values
     s200=pd.Series(c).rolling(200).mean().values
@@ -1797,13 +1723,9 @@ def sek_color(pct):
 def main():
     positions=load_json(POSITIONS_FILE)
     watchlist=load_json(WATCHLIST_FILE)
-
-    # Merge custom aktier ind i UNIVERSE
     custom_entries = load_custom_universe()
     existing_tickers = {t[0] for t in UNIVERSE}
     full_universe = UNIVERSE + [e for e in custom_entries if e[0] not in existing_tickers]
-
-    # SIDEBAR – skjult, opdater-knap i header
     show_wl = False
     only_s2 = False
 
@@ -1870,7 +1792,6 @@ def main():
         for lbl,val,sub in kpi_cells
     ])
 
-    # Opdater-knap øverst til højre
     _c1, _c2 = st.columns([11, 1])
     with _c2:
         if st.button("⟳ OPDATER", use_container_width=True):
@@ -1888,8 +1809,8 @@ def main():
     )
 
     # TABS
-    tabs=st.tabs(["▸ FORSIDE","▸ SCANNER","▸ BENCHMARK","▸ POSITIONER","▸ WATCHLIST","▸ CHARTS","▸ RS ANALYSE","▸ PLAYBOOK","▸ DEBUG"])
-    tab1,tab2,tab3,tab4,tab5,tab6,tab7,tab8,tab9=tabs
+    tabs=st.tabs(["▸ FORSIDE","▸ SCANNER","▸ BENCHMARK","▸ POSITIONER","▸ WATCHLIST","▸ CHARTS","▸ RS ANALYSE","▸ PLAYBOOK"])
+    tab1,tab2,tab3,tab4,tab5,tab6,tab7,tab8=tabs
 
     # ═══════════════════════════════════════════
     # TAB 1: FORSIDE – BLOOMBERG STYLE
@@ -2095,119 +2016,99 @@ def main():
     with tab2:
         # ── TILFØJ AKTIE ──
         with st.expander("➕ TILFØJ AKTIE TIL SCANNER", expanded=True):
-            add_c1, add_c2, add_c3 = st.columns([2,1,1])
-            with add_c1:
-                new_ticker = st.text_input("TICKER","",placeholder="f.eks. IDR.MC eller HIMS",key='add_ticker').upper().strip()
-            with add_c2:
-                st.markdown("<br>", unsafe_allow_html=True)
-                lookup_btn = st.button("🔍 SLÅ OP", use_container_width=True)
-            with add_c3:
-                st.markdown("<br>", unsafe_allow_html=True)
-                add_btn = st.button("✚ TILFØJ", use_container_width=True)
-
+            a1,a2,a3 = st.columns([2,1,1])
+            with a1: new_ticker = st.text_input("TICKER","",placeholder="f.eks. IDR.MC",key='add_ticker').upper().strip()
+            with a2:
+                st.markdown("<br>",unsafe_allow_html=True)
+                lookup_btn = st.button("🔍 SLÅ OP",use_container_width=True)
+            with a3:
+                st.markdown("<br>",unsafe_allow_html=True)
+                add_btn = st.button("✚ TILFØJ",use_container_width=True)
             if lookup_btn and new_ticker:
-                with st.spinner(f"Henter info for {new_ticker}..."):
-                    result, err = lookup_ticker(new_ticker)
+                with st.spinner(f"Henter {new_ticker}..."):
+                    result,err = lookup_ticker(new_ticker)
                 if result:
-                    st.session_state['lookup_result'] = result
+                    st.session_state['lookup_result']=result
                     st.success(f"✓ **{result[1]}** | {result[2]} | {result[3]}")
                 else:
-                    st.error(f"Kunne ikke finde {new_ticker}: {err}")
-                    st.session_state['lookup_result'] = None
-
+                    st.error(f"Fejl: {err}")
+                    st.session_state['lookup_result']=None
             if add_btn and new_ticker:
                 result = st.session_state.get('lookup_result')
-                if result and result[0] == new_ticker:
+                if result and result[0]==new_ticker:
                     existing = load_custom_universe()
-                    if any(e[0] == new_ticker for e in existing):
-                        st.warning(f"{new_ticker} er allerede i scanneren")
+                    if any(e[0]==new_ticker for e in existing):
+                        st.warning(f"{new_ticker} findes allerede")
                     elif new_ticker in {t[0] for t in UNIVERSE}:
                         st.warning(f"{new_ticker} er allerede i standard universet")
                     else:
                         existing.append(result)
                         save_custom_universe(existing)
-                        st.success(f"✓ {result[1]} tilføjet! Tryk Opdater for at scanne.")
-                        st.session_state['lookup_result'] = None
+                        st.success(f"✓ {result[1]} tilføjet!")
                         st.cache_data.clear(); st.rerun()
                 else:
-                    st.warning("Tryk først på 🔍 SLÅ OP for at bekræfte tickeren")
-
+                    st.warning("Tryk først 🔍 SLÅ OP")
             custom_now = load_custom_universe()
             if custom_now:
-                st.markdown(f"**Mine tilføjede aktier ({len(custom_now)}):**")
-                for i, e in enumerate(custom_now):
-                    c1, c2 = st.columns([5,1])
+                st.markdown(f"**Tilføjede aktier ({len(custom_now)}):**")
+                for i,e in enumerate(custom_now):
+                    c1,c2 = st.columns([5,1])
                     with c1: st.markdown(f"`{e[0]}` — {e[1]} | {e[2]} | {e[3]}")
                     with c2:
-                        if st.button("×", key=f"rm_{i}"):
+                        if st.button("×",key=f"rm_{i}"):
                             custom_now.pop(i); save_custom_universe(custom_now)
                             st.cache_data.clear(); st.rerun()
 
         if not scan.empty:
-            # ── Søge og filter række ──
             c1,c2,c3,c4,c5 = st.columns([2,1,1,1,1])
-            with c1:
-                search = st.text_input("🔍 SØG ticker / navn","", placeholder="f.eks. AAPL eller Apple...")
-            with c2:
-                sf2 = st.selectbox("SEKTOR",["ALLE"]+sorted(scan['sector'].unique().tolist()))
-            with c3:
-                rf2 = st.selectbox("REGION",["ALLE"]+sorted(scan['region'].unique().tolist()))
-            with c4:
-                sig2 = st.selectbox("SIGNAL",["ALLE"]+sorted(scan['buy'].unique().tolist()))
-            with c5:
-                only_s2b = st.checkbox("KUN STAGE 2",False,key='scanner_s2')
+            with c1: search = st.text_input("🔍 SØG ticker / navn","",placeholder="f.eks. AAPL eller Apple...")
+            with c2: sf2 = st.selectbox("SEKTOR",["ALLE"]+sorted(scan['sector'].unique().tolist()))
+            with c3: rf2 = st.selectbox("REGION",["ALLE"]+sorted(scan['region'].unique().tolist()))
+            with c4: sig2 = st.selectbox("SIGNAL",["ALLE"]+sorted(scan['buy'].unique().tolist()))
+            with c5: only_s2b = st.checkbox("KUN STAGE 2",False,key='scanner_s2')
 
-            # ── Filtrering ──
-            flt = scan.copy()
-            flt = flt[flt['sector'] != 'REF']
+            flt = scan[scan['sector']!='REF'].copy()
             if search:
-                s = search.upper()
-                flt = flt[flt['ticker'].str.upper().str.contains(s) | flt['name'].str.upper().str.contains(s)]
-            if sf2 != "ALLE":  flt = flt[flt['sector']==sf2]
-            if rf2 != "ALLE":  flt = flt[flt['region']==rf2]
-            if sig2 != "ALLE": flt = flt[flt['buy']==sig2]
-            if only_s2b:       flt = flt[flt['stn']==2]
+                s=search.upper()
+                flt=flt[flt['ticker'].str.upper().str.contains(s)|flt['name'].str.upper().str.contains(s)]
+            if sf2!="ALLE":  flt=flt[flt['sector']==sf2]
+            if rf2!="ALLE":  flt=flt[flt['region']==rf2]
+            if sig2!="ALLE": flt=flt[flt['buy']==sig2]
+            if only_s2b:     flt=flt[flt['stn']==2]
 
-            # ── Earnings on-demand + Portefølje filter ──
-            earn_c1, earn_c2, earn_c3, earn_c4 = st.columns([1,2,2,1])
-            with earn_c1:
-                port_only = st.checkbox("KUN PORTEFØLJE", False, key='pf')
-            with earn_c2:
-                load_earnings_btn = st.button("📅 HENT EARNINGS", use_container_width=True,
-                    help="Henter næste earnings dato for synlige aktier")
-            with earn_c3:
-                earn_filter = st.selectbox("EARNINGS FILTER",["ALLE","RISK","SOON","UPCOMING","LATER"], key='ef')
-            with earn_c4:
+            # ── Earnings on-demand ──
+            e1,e2,e3,e4 = st.columns([1,2,2,1])
+            with e1: port_only = st.checkbox("KUN PORTEFØLJE",False,key='pf')
+            with e2: load_earn = st.button("📅 HENT EARNINGS (top 50)",use_container_width=True)
+            with e3: earn_filter = st.selectbox("EARNINGS FILTER",["ALLE","RISK","SOON","UPCOMING","LATER"],key='ef')
+            with e4:
                 if 'earnings_data' in st.session_state:
-                    if st.button("🗑 RYD", use_container_width=True):
+                    if st.button("🗑 RYD",use_container_width=True):
                         del st.session_state['earnings_data']; st.rerun()
 
-            if load_earnings_btn:
-                # Begræns til top 50 efter score – undgår timeout
-                top_flt = flt[flt['sector']!='REF'].nlargest(50, 'score')
-                tickers_to_fetch = tuple(top_flt['ticker'].tolist())
-                with st.spinner(f"Henter earnings for top {len(tickers_to_fetch)} aktier (efter score)..."):
-                    earnings_map = fetch_earnings_dates(tickers_to_fetch)
-                    flt = enrich_earnings(flt, earnings_map)
-                    st.session_state['earnings_data'] = earnings_map
+            if load_earn:
+                top50 = tuple(flt.nlargest(50,'score')['ticker'].tolist())
+                with st.spinner(f"Henter earnings for {len(top50)} aktier..."):
+                    em = fetch_earnings_dates(top50)
+                    flt = enrich_earnings(flt, em)
+                    st.session_state['earnings_data'] = em
             elif 'earnings_data' in st.session_state:
                 flt = enrich_earnings(flt, st.session_state['earnings_data'])
 
             if port_only and 'is_in_portfolio' in flt.columns:
-                flt = flt[flt['is_in_portfolio']==True]
-            if earn_filter != "ALLE" and 'earnings_flag' in flt.columns:
-                flt = flt[flt['earnings_flag']==earn_filter]
+                flt=flt[flt['is_in_portfolio']==True]
+            if earn_filter!="ALLE" and 'earnings_flag' in flt.columns:
+                flt=flt[flt['earnings_flag']==earn_filter]
 
             st.caption(f"`[ {len(flt)} / {len(scan)} AKTIER ]`")
 
-            def earn_flag_style(val):
+            def earn_style(val):
                 return {'RISK':'background:#cc0000;color:#fff;font-weight:700',
                         'SOON':'background:#cc8800;color:#000;font-weight:700',
                         'UPCOMING':'background:#004499;color:#aad4ff',
-                        'LATER':'background:#111;color:#444',
-                        'N/A':'background:#0a0a0a;color:#333'}.get(val,'')
+                        'LATER':'background:#111;color:#444','N/A':'background:#0a0a0a;color:#333'}.get(val,'')
 
-            def rot_action_style(val):
+            def rot_style(val):
                 return {'ROTATE':'background:#cc0000;color:#fff;font-weight:700',
                         'TRIM':'background:#cc8800;color:#000;font-weight:700',
                         'HOLD':'background:#003322;color:#00ff88'}.get(val,'')
@@ -2229,15 +2130,12 @@ def main():
                 'is_in_portfolio':'Portfolio','best_peer':'Best Peer',
                 'best_peer_score':'Peer Score','rotation_score':'Rot.Score','rotation_action':'Rot.Action',
             }
-            flt_d = flt[[c for c in cols.keys() if c in flt.columns]].rename(columns=cols)
-            flt_d = flt_d.set_index(['Ticker','Name'])
-
-            style = flt_d.style.applymap(sig_style, subset=[c for c in ['BuySignal','SellSignal'] if c in flt_d.columns])
-            if 'Earn.Flag' in flt_d.columns:
-                style = style.applymap(earn_flag_style, subset=['Earn.Flag'])
-            if 'Rot.Action' in flt_d.columns:
-                style = style.applymap(rot_action_style, subset=['Rot.Action'])
-            style = style.format({
+            flt_d=flt[[c for c in cols.keys() if c in flt.columns]].rename(columns=cols)
+            flt_d=flt_d.set_index(['Ticker','Name'])
+            style=flt_d.style.applymap(sig_style,subset=[c for c in ['BuySignal','SellSignal'] if c in flt_d.columns])
+            if 'Earn.Flag' in flt_d.columns: style=style.applymap(earn_style,subset=['Earn.Flag'])
+            if 'Rot.Action' in flt_d.columns: style=style.applymap(rot_style,subset=['Rot.Action'])
+            style=style.format({
                 'Price':'{:.2f}','Daily%':'{:+.1f}%','RSI':'{:.1f}',
                 'SMA20':'{:.2f}','SMA60':'{:.2f}','SMA200':'{:.2f}',
                 'High20':'{:.2f}','Low5':'{:.2f}','DistHigh20%':'{:.1f}%',
@@ -2246,11 +2144,10 @@ def main():
                 'TrendScore':'{:.0f}','SetupScore':'{:.0f}','RiskPenalty':'{:.0f}',
                 'PriorityScore':'{:.0f}','RS Rank':'{:.0f}',
                 'Peer Score':'{:.0f}','Rot.Score':'{:.1f}',
-            }, na_rep='—')
-
-            st.dataframe(style, use_container_width=True, height=750)
-            csv = flt.to_csv(index=False).encode('utf-8')
-            st.download_button("⬇ EKSPORT CSV", csv, 'scanner.csv', 'text/csv')
+            },na_rep='—')
+            st.dataframe(style,use_container_width=True,height=750)
+            csv=flt.to_csv(index=False).encode('utf-8')
+            st.download_button("⬇ EKSPORT CSV",csv,'scanner.csv','text/csv')
 
     # ═══════════════════════════════════════════
     # TAB 3: BENCHMARK
@@ -2794,37 +2691,6 @@ Typiske tegn:
 <span style='color:#005f12;font-size:0.72rem'> — {full}</span><br>
 <span style='color:#00cc33'>{explanation}</span>
 </div>""", unsafe_allow_html=True)
-
-    # ═══════════════════════════════════════════
-    # TAB 9: DEBUG
-    # ═══════════════════════════════════════════
-    with tab9:
-        st.markdown("### `DEBUG – YFINANCE DATA STRUKTUR`")
-        if st.button("🔍 TEST AAPL DATA STRUKTUR"):
-            import yfinance as yf
-            raw = yf.download(['AAPL','MSFT'], period='5d', interval='1d',
-                              group_by='ticker', auto_adjust=True, progress=False)
-            st.write("**Columns type:**", type(raw.columns).__name__)
-            st.write("**Columns:**", raw.columns.tolist())
-            st.write("**Shape:**", raw.shape)
-            st.write("**Head:**")
-            st.dataframe(raw.head(3))
-
-            df_aapl = normalize_df(raw, 'AAPL')
-            st.write("**Efter normalize_df('AAPL'):**")
-            st.write("Columns:", df_aapl.columns.tolist() if not df_aapl.empty else "TOM!")
-            st.dataframe(df_aapl.head(3))
-
-            if not df_aapl.empty:
-                c = safe_col(df_aapl, 'Close')
-                st.write(f"**safe_col Close:** {len(c)} værdier, seneste: {c[-1] if len(c)>0 else 'TOM'}")
-
-        if not scan.empty:
-            st.write(f"**RS Ranks fordeling:** {scan['rs_rank'].value_counts().head(10)}")
-            st.write(f"**RS Rank > 0:** {(scan['rs_rank']>0).sum()} aktier")
-            st.write(f"**RS Trend DOWN:** {(scan['rs_t']=='DOWN').sum()} aktier")
-            st.write(f"**RS Trend UP:** {(scan['rs_t']=='UP').sum()} aktier")
-            st.write(f"**RS Trend FLAT:** {(scan['rs_t']=='FLAT').sum()} aktier")
 
 if __name__=='__main__':
     main()
