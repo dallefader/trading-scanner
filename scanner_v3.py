@@ -2716,7 +2716,6 @@ Typiske tegn:
         st.markdown("### DEBUG")
 
         if st.button("🔍 TEST RS BEREGNING (AAPL vs SPY)"):
-            import yfinance as yf
             raw = yf.download(['AAPL','SPY'], period='1y', interval='1d',
                               group_by='ticker', auto_adjust=True, progress=False)
             st.write("MultiIndex:", isinstance(raw.columns, pd.MultiIndex))
