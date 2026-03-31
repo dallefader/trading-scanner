@@ -973,17 +973,13 @@ def derive_states(price,sma20,sma60,sma200,rsi,rsi_trend,low5,dist_h20,
     ext=(rsi is not None and rsi>84) or price>sma20*1.14
 
     # ── MOMENTUM-KORREKT SVAGHEDSLOGIK ──
-    # FAILED_SETUP: Alle tre momentum-brud skal være til stede
-    # RS DOWN + under SMA200 + SMA20 under SMA60
-    # RSI-recovery beskytter mod falske EXIT (stiger RSI er aktien ikke brudt)
     rsi_recovering = rsi_trend == 'UP' and rsi is not None and rsi > 36
     fs = (rs_trend == 'DOWN'
           and price < sma200
-          and sma20 < sma60
+          and (sma20 < sma60 or (rsi is not None and rsi < 36))
           and not rsi_recovering)
 
     # WEAKENING: RS svækkes + under SMA20 (men ikke nødvendigvis under SMA200)
-    # Konsoliderer over SMA200 = WEAKENING, ikke EXIT
     wk = (rs_trend == 'DOWN' and price < sma20
           and not fs)
 
