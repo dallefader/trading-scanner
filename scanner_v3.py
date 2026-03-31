@@ -2300,6 +2300,23 @@ def main():
         st.markdown("### `IBD RS RANK ANALYSE`")
         st.caption("`RS Rank påvirker IKKE PriorityScore`")
         if not scan.empty:
+            # ── DEBUG INFO ──
+            with st.expander("🔍 DEBUG RS DATA", expanded=True):
+                st.write(f"**RS Rank > 0:** {(scan['rs_rank']>0).sum()} / {len(scan)} aktier")
+                st.write(f"**RS Trend UP:** {(scan['rs_t']=='UP').sum()}")
+                st.write(f"**RS Trend DOWN:** {(scan['rs_t']=='DOWN').sum()}")
+                st.write(f"**RS Trend FLAT:** {(scan['rs_t']=='FLAT').sum()}")
+                st.write(f"**EXIT signaler:** {(scan['sell']=='EXIT').sum()}")
+                st.write(f"**REDUCE signaler:** {(scan['sell']=='REDUCE').sum()}")
+                if st.button("🔍 TEST YFINANCE STRUKTUR"):
+                    raw = yf.download(['AAPL','MSFT'], period='5d', interval='1d',
+                                      group_by='ticker', auto_adjust=True, progress=False)
+                    st.write("**MultiIndex type:**", type(raw.columns).__name__)
+                    st.write("**Level 0 (første 5):**", raw.columns.get_level_values(0).tolist()[:5])
+                    st.write("**Level 1 (første 5):**", raw.columns.get_level_values(1).tolist()[:5])
+                    df_test = get_col.__module__ and raw['AAPL'] if 'AAPL' in raw.columns.get_level_values(0) else raw.xs('AAPL', axis=1, level=1)
+                    st.write("**AAPL kolonner efter raw['AAPL']:**", df_test.columns.tolist() if hasattr(df_test,'columns') else "Serie")
+
             color_map={'BUY NOW':'#00ff41','BUY BREAKOUT':'#00cc33','BUILD POSITION':'#0088ff',
                        'STARTER BUY':'#00aaff','EXTENDED — WAIT':'#ffaa00',
                        'REDUCE':'#ff6600','EXIT':'#ff3333','WATCHLIST':'#225522'}
