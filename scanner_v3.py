@@ -1875,8 +1875,8 @@ def main():
     )
 
     # TABS
-    tabs=st.tabs(["▸ FORSIDE","▸ SCANNER","▸ BENCHMARK","▸ POSITIONER","▸ WATCHLIST","▸ CHARTS","▸ RS ANALYSE","▸ PLAYBOOK"])
-    tab1,tab2,tab3,tab4,tab5,tab6,tab7,tab8=tabs
+    tabs=st.tabs(["▸ FORSIDE","▸ SCANNER","▸ BENCHMARK","▸ POSITIONER","▸ WATCHLIST","▸ CHARTS","▸ RS ANALYSE","▸ PLAYBOOK","▸ DEBUG"])
+    tab1,tab2,tab3,tab4,tab5,tab6,tab7,tab8,tab9=tabs
 
     # ═══════════════════════════════════════════
     # TAB 1: FORSIDE – BLOOMBERG STYLE
@@ -2781,6 +2781,37 @@ Typiske tegn:
 <span style='color:#005f12;font-size:0.72rem'> — {full}</span><br>
 <span style='color:#00cc33'>{explanation}</span>
 </div>""", unsafe_allow_html=True)
+
+    # ═══════════════════════════════════════════
+    # TAB 9: DEBUG
+    # ═══════════════════════════════════════════
+    with tab9:
+        st.markdown("### `DEBUG – YFINANCE DATA STRUKTUR`")
+        if st.button("🔍 TEST AAPL DATA STRUKTUR"):
+            import yfinance as yf
+            raw = yf.download(['AAPL','MSFT'], period='5d', interval='1d',
+                              group_by='ticker', auto_adjust=True, progress=False)
+            st.write("**Columns type:**", type(raw.columns).__name__)
+            st.write("**Columns:**", raw.columns.tolist())
+            st.write("**Shape:**", raw.shape)
+            st.write("**Head:**")
+            st.dataframe(raw.head(3))
+
+            df_aapl = normalize_df(raw, 'AAPL')
+            st.write("**Efter normalize_df('AAPL'):**")
+            st.write("Columns:", df_aapl.columns.tolist() if not df_aapl.empty else "TOM!")
+            st.dataframe(df_aapl.head(3))
+
+            if not df_aapl.empty:
+                c = safe_col(df_aapl, 'Close')
+                st.write(f"**safe_col Close:** {len(c)} værdier, seneste: {c[-1] if len(c)>0 else 'TOM'}")
+
+        if not scan.empty:
+            st.write(f"**RS Ranks fordeling:** {scan['rs_rank'].value_counts().head(10)}")
+            st.write(f"**RS Rank > 0:** {(scan['rs_rank']>0).sum()} aktier")
+            st.write(f"**RS Trend DOWN:** {(scan['rs_t']=='DOWN').sum()} aktier")
+            st.write(f"**RS Trend UP:** {(scan['rs_t']=='UP').sum()} aktier")
+            st.write(f"**RS Trend FLAT:** {(scan['rs_t']=='FLAT').sum()} aktier")
 
 if __name__=='__main__':
     main()
