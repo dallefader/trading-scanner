@@ -166,6 +166,7 @@ CONFIG = {
 }
 POSITIONS_FILE = 'positions.json'
 WATCHLIST_FILE = 'watchlist.json'
+CUSTOM_UNIVERSE_FILE = 'custom_universe.json'
 
 EXCHANGES = {
     'NYSE':       {'tz':'America/New_York',  'open':time(9,30),'close':time(16,0), 'pre':time(4,0),  'flag':'🇺🇸'},
@@ -472,12 +473,11 @@ UNIVERSE = [
     ('ENEL.MI','Enel','Utilities','Italy','EXTENDED'),
     ('ENI.MI','ENI','Energy','Italy','EXTENDED'),
     ('UCG.MI','UniCredit','Financials','Italy','EXTENDED'),
-    ('IDR.MC', 'Indra Sistemas', 'Tech', 'Spain', 'EXTENDED'),
 
     # ── FINLAND ────────────────────────────────────────────
     ('NOKIA.HE','Nokia','Tech','Finland','EXTENDED'),
     ('KNEBV.HE','Kone','Industrials','Finland','EXTENDED'),
-    ('ITX.MC', 'Inditex', 'Consumer', 'Spain', 'EXTENDED'),
+
     # ── JAPAN ──────────────────────────────────────────────
     ('7203.T','Toyota','Consumer','Japan','EXTENDED'),
     ('6758.T','Sony','Tech','Japan','EXTENDED'),
@@ -971,10 +971,21 @@ def derive_states(price,sma20,sma60,sma200,rsi,rsi_trend,low5,dist_h20,
     ma=(br and vol_ratio is not None and vol_ratio>=1.10
         and rsi is not None and 50<=rsi<=80 and liq_pass and market_regime!='RISK_OFF')
     ext=(rsi is not None and rsi>84) or price>sma20*1.14
-    w1=price<sma20; w2=sma20<sma60; w3=price<sma200; w4=rs_trend=='DOWN'
-    wc=sum([w1,w2,w3,w4])
-    wk=wc>=2 or(price<sma20 and rs_trend=='DOWN')
-    fs=wc>=3 and((rsi is not None and rsi<42) or price<low5)
+
+    # ── MOMENTUM-KORREKT SVAGHEDSLOGIK ──
+    # FAILED_SETUP: Alle tre momentum-brud skal være til stede
+    # RS DOWN + under SMA200 + SMA20 under SMA60
+    # RSI-recovery beskytter mod falske EXIT (stiger RSI er aktien ikke brudt)
+    rsi_recovering = rsi_trend == 'UP' and rsi is not None and rsi > 36
+    fs = (rs_trend == 'DOWN'
+          and price < sma200
+          and sma20 < sma60
+          and not rsi_recovering)
+
+    # WEAKENING: RS svækkes + under SMA20 (men ikke nødvendigvis under SMA200)
+    # Konsoliderer over SMA200 = WEAKENING, ikke EXIT
+    wk = (rs_trend == 'DOWN' and price < sma20
+          and not fs)
 
     ss=0
     if accum: ss+=20
@@ -999,20 +1010,25 @@ def derive_states(price,sma20,sma60,sma200,rsi,rsi_trend,low5,dist_h20,
 
     pri=max(0,min(100,ts+ss-rp))
 
-    if fs:   st_='FAILED_SETUP'
-    elif ext: st_='EXTENDED'
-    elif ma:  st_='MOMENTUM_ACTIVE'
-    elif br:  st_='BREAKOUT_READY'
-    elif ib:  st_='INSTITUTIONAL_BUILD'
+    if fs:      st_='FAILED_SETUP'
+    elif ext:   st_='EXTENDED'
+    elif ma:    st_='MOMENTUM_ACTIVE'
+    elif br:    st_='BREAKOUT_READY'
+    elif ib:    st_='INSTITUTIONAL_BUILD'
     elif accum: st_='ACCUMULATION'
-    elif wk:  st_='WEAKENING'
-    else:     st_='NO_SETUP'
+    elif wk:    st_='WEAKENING'
+    else:       st_='NO_SETUP'
 
     am={'ACCUMULATION':'STARTER','INSTITUTIONAL_BUILD':'BUILD',
         'BREAKOUT_READY':'BREAKOUT_ENTRY','MOMENTUM_ACTIVE':'MOMENTUM_ENTRY',
         'EXTENDED':'EXTENDED','WEAKENING':'REDUCE','FAILED_SETUP':'EXIT'}
     ac=am.get(st_,'WATCHLIST')
-    if market_regime=='RISK_OFF' and ac in('BUILD','BREAKOUT_ENTRY','MOMENTUM_ENTRY'): ac='STARTER'
+
+    # I NEUTRAL/RISK_ON: downgrade EXIT → REDUCE hvis RSI ikke i frit fald
+    if ac=='EXIT' and market_regime!='RISK_OFF' and rsi is not None and rsi>30:
+        ac='REDUCE'
+    if market_regime=='RISK_OFF' and ac in('BUILD','BREAKOUT_ENTRY','MOMENTUM_ENTRY'):
+        ac='STARTER'
 
     bm={'STARTER':'STARTER BUY','BUILD':'BUILD POSITION',
         'BREAKOUT_ENTRY':'BUY BREAKOUT','MOMENTUM_ENTRY':'BUY NOW','EXTENDED':'EXTENDED — WAIT'}
@@ -1242,194 +1258,6 @@ def fetch_scanner_data(universe_tuple, market_regime='NEUTRAL'):
         df_out=df_out.sort_values('score',ascending=False).reset_index(drop=True)
     return df_out
 
-# ══════════════════════════════════════════════════════════════
-# EARNINGS LAYER
-# ══════════════════════════════════════════════════════════════
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_earnings_dates(tickers_tuple):
-    """
-    Henter næste earnings dato for alle tickers via yfinance.
-    Bruger earnings_dates (mere pålidelig end calendar).
-    Returnerer dict: { ticker: datetime or None }
-    Cachet 1 time.
-    """
-    tickers = list(tickers_tuple)
-    earnings_map = {}
-    today = pd.Timestamp.now(tz='UTC').normalize()
-
-    for ticker in tickers:
-        ed = None
-        try:
-            tk = yf.Ticker(ticker)
-
-            # Metode 1: earnings_dates (nyeste yfinance)
-            try:
-                edf = tk.earnings_dates
-                if edf is not None and not edf.empty:
-                    edf.index = pd.to_datetime(edf.index, utc=True)
-                    future = edf[edf.index.normalize() >= today]
-                    if not future.empty:
-                        ed = future.index.min()
-            except:
-                pass
-
-            # Metode 2: calendar fallback
-            if ed is None:
-                try:
-                    cal = tk.calendar
-                    if cal is not None:
-                        # Nyere yfinance: calendar er en dict
-                        if isinstance(cal, dict):
-                            val = cal.get('Earnings Date') or cal.get('earningsDate')
-                            if val:
-                                if isinstance(val, (list, tuple)):
-                                    dates = [pd.Timestamp(d, tz='UTC') for d in val if pd.notna(d)]
-                                else:
-                                    dates = [pd.Timestamp(val, tz='UTC')]
-                                future = [d for d in dates if d.normalize() >= today]
-                                ed = min(future) if future else None
-                        # Ældre yfinance: calendar er DataFrame
-                        elif hasattr(cal, 'index') and 'Earnings Date' in cal.index:
-                            val = cal.loc['Earnings Date']
-                            if hasattr(val, '__iter__') and not isinstance(val, str):
-                                dates = [pd.Timestamp(d, tz='UTC') for d in val if pd.notna(d)]
-                                future = [d for d in dates if d.normalize() >= today]
-                                ed = min(future) if future else None
-                            else:
-                                d = pd.Timestamp(val, tz='UTC')
-                                ed = d if d.normalize() >= today else None
-                except:
-                    pass
-
-        except:
-            pass
-
-        earnings_map[ticker] = ed
-
-    return earnings_map
-
-def calc_earnings_fields(ticker, earnings_map):
-    """
-    Beregner earnings-felter for én aktie baseret på earnings_map.
-    Returnerer dict med earnings_date, days_to_earnings, earnings_flag, has_earnings.
-    """
-    today = pd.Timestamp.now(tz='UTC').normalize()
-    ed = earnings_map.get(ticker)
-
-    if ed is None:
-        return {
-            'earnings_date': 'N/A',
-            'days_to_earnings': None,
-            'earnings_flag': 'N/A',
-            'has_earnings': False,
-        }
-
-    days = (ed.normalize() - today).days
-
-    if days < 0:
-        flag = 'N/A'
-    elif days <= 2:
-        flag = 'RISK'
-    elif days <= 7:
-        flag = 'SOON'
-    elif days <= 20:
-        flag = 'UPCOMING'
-    else:
-        flag = 'LATER'
-
-    return {
-        'earnings_date': ed.strftime('%Y-%m-%d'),
-        'days_to_earnings': int(days) if days >= 0 else None,
-        'earnings_flag': flag,
-        'has_earnings': True,
-    }
-
-def enrich_earnings(df, earnings_map):
-    """
-    Tilføjer earnings-kolonner til eksisterende scanner DataFrame.
-    Ingen nye strukturer – direkte merge på ticker.
-    """
-    if df.empty:
-        return df
-    rows = [calc_earnings_fields(t, earnings_map) for t in df['ticker']]
-    earn_df = pd.DataFrame(rows, index=df.index)
-    return pd.concat([df, earn_df], axis=1)
-
-# ══════════════════════════════════════════════════════════════
-# ROTATION LAYER
-# ══════════════════════════════════════════════════════════════
-
-# Statisk peer-mapping: sektor → liste af repræsentative tickers
-SECTOR_PEERS = {
-    'Tech':        ['AAPL','MSFT','NVDA','AMD','GOOGL','META','ORCL','CRM','NOW','ADBE'],
-    'AI':          ['NVDA','AMD','PLTR','AVGO','MRVL','SMCI','ARM','TSM','CDNS','SNPS'],
-    'Financials':  ['JPM','GS','MS','V','MA','BAC','BLK','AXP','SCHW','COF'],
-    'Energy':      ['XOM','CVX','COP','EOG','DVN','OXY','FANG','SLB','HAL','PSX'],
-    'Healthcare':  ['LLY','UNH','REGN','VRTX','JNJ','MRK','ABBV','AMGN','GILD','BMY'],
-    'Consumer':    ['AMZN','TSLA','NFLX','COST','HD','WMT','NKE','SBUX','MCD','CMG'],
-    'Industrials': ['CAT','GE','RTX','LMT','NOC','BA','HON','GEV','PWR','ETN'],
-    'Materials':   ['FCX','NUE','LIN','ALB','NEM','GOLD','WPM','FNV','FCX','MP'],
-    'Utilities':   ['NEE','DUK','SO','AEP','EXC','PCG'],
-    'RealEstate':  ['PLD','AMT','EQIX','DLR','CCI','SPG','O'],
-    'Momentum':    ['MARA','RIOT','PLTR','RKLB','IONQ','CRWD','NET'],
-    'ETF':         ['SPY','QQQ','IWM','XLK','XLE','XLF','XLV','XLI'],
-}
-
-def calc_rotation(df, positions):
-    """
-    Beregner rotation_score, best_peer_score og rotation_action
-    KUN for aktier i porteføljen.
-
-    rotation_score = best_peer_score - stock_score
-    > 10  → ROTATE
-    5–10  → TRIM
-    < 5   → HOLD
-    """
-    if df.empty or not positions:
-        df['is_in_portfolio'] = False
-        df['best_peer'] = None
-        df['best_peer_score'] = None
-        df['rotation_score'] = None
-        df['rotation_action'] = None
-        return df
-
-    portfolio_tickers = {p['ticker'] for p in positions}
-    score_map = dict(zip(df['ticker'], df['score']))
-    sector_map = dict(zip(df['ticker'], df['sector']))
-
-    rotation_rows = {}
-    for ticker in portfolio_tickers:
-        if ticker not in score_map:
-            continue
-        sector = sector_map.get(ticker, 'Tech')
-        peers = SECTOR_PEERS.get(sector, [])
-        # Find peers der er i scanneren (har score)
-        peer_scores = {p: score_map[p] for p in peers if p in score_map and p != ticker}
-        if not peer_scores:
-            rotation_rows[ticker] = {'best_peer': None, 'best_peer_score': None,
-                                      'rotation_score': 0, 'rotation_action': 'HOLD'}
-            continue
-        best_peer = max(peer_scores, key=peer_scores.get)
-        best_score = peer_scores[best_peer]
-        rot_score = round(best_score - score_map[ticker], 1)
-        if rot_score > 10:   action = 'ROTATE'
-        elif rot_score >= 5: action = 'TRIM'
-        else:                action = 'HOLD'
-        rotation_rows[ticker] = {
-            'best_peer': best_peer,
-            'best_peer_score': best_score,
-            'rotation_score': rot_score,
-            'rotation_action': action,
-        }
-
-    # Tilføj kolonner til df
-    df['is_in_portfolio'] = df['ticker'].isin(portfolio_tickers)
-    df['best_peer']       = df['ticker'].map(lambda t: rotation_rows.get(t, {}).get('best_peer'))
-    df['best_peer_score'] = df['ticker'].map(lambda t: rotation_rows.get(t, {}).get('best_peer_score'))
-    df['rotation_score']  = df['ticker'].map(lambda t: rotation_rows.get(t, {}).get('rotation_score'))
-    df['rotation_action'] = df['ticker'].map(lambda t: rotation_rows.get(t, {}).get('rotation_action'))
-    return df
-
 def derive_regime(mkt,scan):
     """
     Forbedret regime-beregning:
@@ -1486,6 +1314,153 @@ def derive_regime(mkt,scan):
 # ══════════════════════════════════════════════════════════════
 def load_json(f): return json.load(open(f)) if os.path.exists(f) else []
 def save_json(f,d): json.dump(d,open(f,'w'),indent=2,default=str)
+
+# ══════════════════════════════════════════════════════════════
+# CUSTOM UNIVERSE – tilføj aktier via UI
+# ══════════════════════════════════════════════════════════════
+def load_custom_universe():
+    raw = load_json(CUSTOM_UNIVERSE_FILE)
+    return [tuple(r) for r in raw]
+
+def save_custom_universe(entries):
+    save_json(CUSTOM_UNIVERSE_FILE, [list(e) for e in entries])
+
+@st.cache_data(ttl=60, show_spinner=False)
+def lookup_ticker(ticker):
+    try:
+        tk = yf.Ticker(ticker)
+        info = tk.info
+        name   = info.get('longName') or info.get('shortName') or ticker
+        sector = info.get('sector') or 'Unknown'
+        country = info.get('country') or 'Unknown'
+        country_map = {
+            'United States':'US','Denmark':'Denmark','Sweden':'Sweden',
+            'Norway':'Norway','Finland':'Finland','Germany':'Germany',
+            'United Kingdom':'UK','France':'France','Netherlands':'Netherlands',
+            'Switzerland':'Switzerland','Spain':'Spain','Italy':'Italy',
+            'Japan':'Japan','Hong Kong':'HongKong','South Korea':'SouthKorea',
+            'Taiwan':'Taiwan','Canada':'Canada','Israel':'Israel',
+            'India':'India','Australia':'Australia','Brazil':'Brazil',
+        }
+        region = country_map.get(country, country)
+        return (ticker.upper(), name, sector, region, 'EXTENDED'), None
+    except Exception as e:
+        return None, str(e)
+
+# ══════════════════════════════════════════════════════════════
+# EARNINGS LAYER – on-demand
+# ══════════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_earnings_dates(tickers_tuple):
+    tickers = list(tickers_tuple)
+    earnings_map = {}
+    today = pd.Timestamp.now(tz='UTC').normalize()
+    for ticker in tickers:
+        ed = None
+        try:
+            tk = yf.Ticker(ticker)
+            try:
+                edf = tk.earnings_dates
+                if edf is not None and not edf.empty:
+                    edf.index = pd.to_datetime(edf.index, utc=True)
+                    future = edf[edf.index.normalize() >= today]
+                    if not future.empty:
+                        ed = future.index.min()
+            except: pass
+            if ed is None:
+                try:
+                    cal = tk.calendar
+                    if cal is not None:
+                        if isinstance(cal, dict):
+                            val = cal.get('Earnings Date') or cal.get('earningsDate')
+                            if val:
+                                dates = val if isinstance(val,(list,tuple)) else [val]
+                                dates = [pd.Timestamp(d,tz='UTC') for d in dates if pd.notna(d)]
+                                future = [d for d in dates if d.normalize()>=today]
+                                ed = min(future) if future else None
+                        elif hasattr(cal,'index') and 'Earnings Date' in cal.index:
+                            val = cal.loc['Earnings Date']
+                            if hasattr(val,'__iter__') and not isinstance(val,str):
+                                dates = [pd.Timestamp(d,tz='UTC') for d in val if pd.notna(d)]
+                                future = [d for d in dates if d.normalize()>=today]
+                                ed = min(future) if future else None
+                            else:
+                                d = pd.Timestamp(val,tz='UTC')
+                                ed = d if d.normalize()>=today else None
+                except: pass
+        except: pass
+        earnings_map[ticker] = ed
+    return earnings_map
+
+def calc_earnings_fields(ticker, earnings_map):
+    today = pd.Timestamp.now(tz='UTC').normalize()
+    ed = earnings_map.get(ticker)
+    if ed is None:
+        return {'earnings_date':'N/A','days_to_earnings':None,'earnings_flag':'N/A','has_earnings':False}
+    days = (ed.normalize()-today).days
+    if days < 0:   flag = 'N/A'
+    elif days <= 2: flag = 'RISK'
+    elif days <= 7: flag = 'SOON'
+    elif days <= 20: flag = 'UPCOMING'
+    else:           flag = 'LATER'
+    return {'earnings_date':ed.strftime('%Y-%m-%d'),'days_to_earnings':int(days) if days>=0 else None,
+            'earnings_flag':flag,'has_earnings':True}
+
+def enrich_earnings(df, earnings_map):
+    if df.empty: return df
+    rows = [calc_earnings_fields(t, earnings_map) for t in df['ticker']]
+    return pd.concat([df, pd.DataFrame(rows, index=df.index)], axis=1)
+
+# ══════════════════════════════════════════════════════════════
+# ROTATION LAYER
+# ══════════════════════════════════════════════════════════════
+SECTOR_PEERS = {
+    'Tech':        ['AAPL','MSFT','NVDA','AMD','GOOGL','META','ORCL','CRM','NOW','ADBE'],
+    'AI':          ['NVDA','AMD','PLTR','AVGO','MRVL','SMCI','ARM','TSM','CDNS','SNPS'],
+    'Financials':  ['JPM','GS','MS','V','MA','BAC','BLK','AXP','SCHW','COF'],
+    'Energy':      ['XOM','CVX','COP','EOG','DVN','OXY','FANG','SLB','HAL','PSX'],
+    'Healthcare':  ['LLY','UNH','REGN','VRTX','JNJ','MRK','ABBV','AMGN','GILD','BMY'],
+    'Consumer':    ['AMZN','TSLA','NFLX','COST','HD','WMT','NKE','SBUX','MCD','CMG'],
+    'Industrials': ['CAT','GE','RTX','LMT','NOC','BA','HON','GEV','PWR','ETN'],
+    'Materials':   ['FCX','NUE','LIN','ALB','NEM','GOLD','WPM','FNV','FCX','MP'],
+    'Utilities':   ['NEE','DUK','SO','AEP','EXC','PCG'],
+    'RealEstate':  ['PLD','AMT','EQIX','DLR','CCI','SPG','O'],
+    'Momentum':    ['MARA','RIOT','PLTR','RKLB','IONQ','CRWD','NET'],
+    'ETF':         ['SPY','QQQ','IWM','XLK','XLE','XLF','XLV','XLI'],
+}
+
+def calc_rotation(df, positions):
+    if df.empty or not positions:
+        df['is_in_portfolio'] = False
+        df['best_peer'] = None
+        df['best_peer_score'] = None
+        df['rotation_score'] = None
+        df['rotation_action'] = None
+        return df
+    portfolio_tickers = {p['ticker'] for p in positions}
+    score_map = dict(zip(df['ticker'], df['score']))
+    sector_map = dict(zip(df['ticker'], df['sector']))
+    rotation_rows = {}
+    for ticker in portfolio_tickers:
+        if ticker not in score_map: continue
+        sector = sector_map.get(ticker, 'Tech')
+        peers = SECTOR_PEERS.get(sector, [])
+        peer_scores = {p: score_map[p] for p in peers if p in score_map and p != ticker}
+        if not peer_scores:
+            rotation_rows[ticker] = {'best_peer':None,'best_peer_score':None,'rotation_score':0,'rotation_action':'HOLD'}
+            continue
+        best_peer = max(peer_scores, key=peer_scores.get)
+        best_score = peer_scores[best_peer]
+        rot_score = round(best_score - score_map[ticker], 1)
+        action = 'ROTATE' if rot_score>10 else ('TRIM' if rot_score>=5 else 'HOLD')
+        rotation_rows[ticker] = {'best_peer':best_peer,'best_peer_score':best_score,
+                                  'rotation_score':rot_score,'rotation_action':action}
+    df['is_in_portfolio'] = df['ticker'].isin(portfolio_tickers)
+    df['best_peer']       = df['ticker'].map(lambda t: rotation_rows.get(t,{}).get('best_peer'))
+    df['best_peer_score'] = df['ticker'].map(lambda t: rotation_rows.get(t,{}).get('best_peer_score'))
+    df['rotation_score']  = df['ticker'].map(lambda t: rotation_rows.get(t,{}).get('rotation_score'))
+    df['rotation_action'] = df['ticker'].map(lambda t: rotation_rows.get(t,{}).get('rotation_action'))
+    return df
 
 def enrich_positions(positions,scan):
     if not positions: return pd.DataFrame()
@@ -1760,9 +1735,14 @@ def main():
     positions=load_json(POSITIONS_FILE)
     watchlist=load_json(WATCHLIST_FILE)
 
-    # SIDEBAR – fjernet, opdater-knap i header
-    show_wl  = False
-    only_s2  = False
+    # Merge custom aktier ind i UNIVERSE
+    custom_entries = load_custom_universe()
+    existing_tickers = {t[0] for t in UNIVERSE}
+    full_universe = UNIVERSE + [e for e in custom_entries if e[0] not in existing_tickers]
+
+    # SIDEBAR – skjult, opdater-knap i header
+    show_wl = False
+    only_s2 = False
 
     # LOAD DATA
     prog=st.progress(0,text="`[ INIT ] Henter markedsdata...`")
@@ -1770,20 +1750,12 @@ def main():
     prog.progress(18,text="`[ CALC ] Regime...`")
     regime=derive_regime(mkt,pd.DataFrame())
     prog.progress(22,text="`[ SCAN ] Scanner univers...`")
-    scan=fetch_scanner_data(tuple(UNIVERSE),regime)
+    scan=fetch_scanner_data(tuple(full_universe),regime)
     regime=derive_regime(mkt,scan)
-    prog.progress(80,text="`[ EARNINGS ] Henter earnings datoer...`")
-    # Kun hent earnings for aktier der faktisk er i scanneren (ikke REF)
     if not scan.empty:
-        scan_tickers = tuple(scan[scan['sector']!='REF']['ticker'].tolist())
-        earnings_map = fetch_earnings_dates(scan_tickers)
-        scan = enrich_earnings(scan, earnings_map)
         scan = calc_rotation(scan, positions)
     prog.progress(100,text="`[ OK ] Klar`")
     prog.empty()
-
-    # Opdater sidebar filtre - ikke længere nødvendige her
-    pass
 
     vix_price=mkt.get('^VIX',{}).get('price',None)
     vix_pct=mkt.get('^VIX',{}).get('pct1',None)
@@ -1835,14 +1807,18 @@ def main():
         for lbl,val,sub in kpi_cells
     ])
 
+    # Opdater-knap øverst til højre
+    _c1, _c2 = st.columns([11, 1])
+    with _c2:
+        if st.button("⟳ OPDATER", use_container_width=True):
+            st.cache_data.clear(); st.rerun()
+
     st.markdown(
         f'<div style="background:#000;border-bottom:2px solid #00ff88;margin-bottom:4px">'
-        # Titel + børsstatus på én linje
         f'<div style="display:flex;justify-content:space-between;align-items:center;padding:4px 12px;border-bottom:1px solid #0d0d0d">'
         f'<span style="font-family:Orbitron,monospace;font-size:0.85rem;color:#fff;font-weight:900;letter-spacing:3px">▸ TRADING TERMINAL PRO</span>'
         f'<span>{exch_html}</span>'
         f'</div>'
-        # KPI strip
         f'<div class="kpi-strip">{cells_html}</div>'
         f'</div>',
         unsafe_allow_html=True
@@ -2054,12 +2030,61 @@ def main():
     # TAB 2: SCANNER
     # ═══════════════════════════════════════════
     with tab2:
+        # ── TILFØJ AKTIE ──
+        with st.expander("➕ TILFØJ AKTIE TIL SCANNER", expanded=True):
+            add_c1, add_c2, add_c3 = st.columns([2,1,1])
+            with add_c1:
+                new_ticker = st.text_input("TICKER","",placeholder="f.eks. IDR.MC eller HIMS",key='add_ticker').upper().strip()
+            with add_c2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                lookup_btn = st.button("🔍 SLÅ OP", use_container_width=True)
+            with add_c3:
+                st.markdown("<br>", unsafe_allow_html=True)
+                add_btn = st.button("✚ TILFØJ", use_container_width=True)
+
+            if lookup_btn and new_ticker:
+                with st.spinner(f"Henter info for {new_ticker}..."):
+                    result, err = lookup_ticker(new_ticker)
+                if result:
+                    st.session_state['lookup_result'] = result
+                    st.success(f"✓ **{result[1]}** | {result[2]} | {result[3]}")
+                else:
+                    st.error(f"Kunne ikke finde {new_ticker}: {err}")
+                    st.session_state['lookup_result'] = None
+
+            if add_btn and new_ticker:
+                result = st.session_state.get('lookup_result')
+                if result and result[0] == new_ticker:
+                    existing = load_custom_universe()
+                    if any(e[0] == new_ticker for e in existing):
+                        st.warning(f"{new_ticker} er allerede i scanneren")
+                    elif new_ticker in {t[0] for t in UNIVERSE}:
+                        st.warning(f"{new_ticker} er allerede i standard universet")
+                    else:
+                        existing.append(result)
+                        save_custom_universe(existing)
+                        st.success(f"✓ {result[1]} tilføjet! Tryk Opdater for at scanne.")
+                        st.session_state['lookup_result'] = None
+                        st.cache_data.clear(); st.rerun()
+                else:
+                    st.warning("Tryk først på 🔍 SLÅ OP for at bekræfte tickeren")
+
+            custom_now = load_custom_universe()
+            if custom_now:
+                st.markdown(f"**Mine tilføjede aktier ({len(custom_now)}):**")
+                for i, e in enumerate(custom_now):
+                    c1, c2 = st.columns([5,1])
+                    with c1: st.markdown(f"`{e[0]}` — {e[1]} | {e[2]} | {e[3]}")
+                    with c2:
+                        if st.button("×", key=f"rm_{i}"):
+                            custom_now.pop(i); save_custom_universe(custom_now)
+                            st.cache_data.clear(); st.rerun()
+
         if not scan.empty:
             # ── Søge og filter række ──
             c1,c2,c3,c4,c5 = st.columns([2,1,1,1,1])
             with c1:
-                search = st.text_input("🔍 SØG ticker / navn","",
-                    placeholder="f.eks. AAPL eller Apple...")
+                search = st.text_input("🔍 SØG ticker / navn","", placeholder="f.eks. AAPL eller Apple...")
             with c2:
                 sf2 = st.selectbox("SEKTOR",["ALLE"]+sorted(scan['sector'].unique().tolist()))
             with c3:
@@ -2071,31 +2096,59 @@ def main():
 
             # ── Filtrering ──
             flt = scan.copy()
-            flt = flt[flt['sector'] != 'REF']  # skjul reference indeks
+            flt = flt[flt['sector'] != 'REF']
             if search:
                 s = search.upper()
-                flt = flt[flt['ticker'].str.upper().str.contains(s) |
-                          flt['name'].str.upper().str.contains(s)]
+                flt = flt[flt['ticker'].str.upper().str.contains(s) | flt['name'].str.upper().str.contains(s)]
             if sf2 != "ALLE":  flt = flt[flt['sector']==sf2]
             if rf2 != "ALLE":  flt = flt[flt['region']==rf2]
             if sig2 != "ALLE": flt = flt[flt['buy']==sig2]
             if only_s2b:       flt = flt[flt['stn']==2]
 
-            # ── Earnings filter ──
-            earn_col1, earn_col2 = st.columns([2,2])
-            with earn_col1:
-                earn_filter = st.selectbox("EARNINGS", ["ALLE","RISK","SOON","UPCOMING","LATER","N/A"], key='ef')
-            with earn_col2:
+            # ── Earnings on-demand + Portefølje filter ──
+            earn_c1, earn_c2, earn_c3, earn_c4 = st.columns([1,2,2,1])
+            with earn_c1:
                 port_only = st.checkbox("KUN PORTEFØLJE", False, key='pf')
+            with earn_c2:
+                load_earnings_btn = st.button("📅 HENT EARNINGS", use_container_width=True,
+                    help="Henter næste earnings dato for synlige aktier")
+            with earn_c3:
+                earn_filter = st.selectbox("EARNINGS FILTER",["ALLE","RISK","SOON","UPCOMING","LATER"], key='ef')
+            with earn_c4:
+                if 'earnings_data' in st.session_state:
+                    if st.button("🗑 RYD", use_container_width=True):
+                        del st.session_state['earnings_data']; st.rerun()
 
-            if earn_filter != "ALLE" and 'earnings_flag' in flt.columns:
-                flt = flt[flt['earnings_flag'] == earn_filter]
+            if load_earnings_btn:
+                # Begræns til top 50 efter score – undgår timeout
+                top_flt = flt[flt['sector']!='REF'].nlargest(50, 'score')
+                tickers_to_fetch = tuple(top_flt['ticker'].tolist())
+                with st.spinner(f"Henter earnings for top {len(tickers_to_fetch)} aktier (efter score)..."):
+                    earnings_map = fetch_earnings_dates(tickers_to_fetch)
+                    flt = enrich_earnings(flt, earnings_map)
+                    st.session_state['earnings_data'] = earnings_map
+            elif 'earnings_data' in st.session_state:
+                flt = enrich_earnings(flt, st.session_state['earnings_data'])
+
             if port_only and 'is_in_portfolio' in flt.columns:
-                flt = flt[flt['is_in_portfolio'] == True]
+                flt = flt[flt['is_in_portfolio']==True]
+            if earn_filter != "ALLE" and 'earnings_flag' in flt.columns:
+                flt = flt[flt['earnings_flag']==earn_filter]
 
             st.caption(f"`[ {len(flt)} / {len(scan)} AKTIER ]`")
 
-            # Kolonner i EKSAKT samme rækkefølge som Sheets v5.1
+            def earn_flag_style(val):
+                return {'RISK':'background:#cc0000;color:#fff;font-weight:700',
+                        'SOON':'background:#cc8800;color:#000;font-weight:700',
+                        'UPCOMING':'background:#004499;color:#aad4ff',
+                        'LATER':'background:#111;color:#444',
+                        'N/A':'background:#0a0a0a;color:#333'}.get(val,'')
+
+            def rot_action_style(val):
+                return {'ROTATE':'background:#cc0000;color:#fff;font-weight:700',
+                        'TRIM':'background:#cc8800;color:#000;font-weight:700',
+                        'HOLD':'background:#003322;color:#00ff88'}.get(val,'')
+
             cols={
                 'ticker':'Ticker','name':'Name','sector':'Sector','region':'Region','tier':'Tier',
                 'price':'Price','dpct':'Daily%','rsi':'RSI','rsi_t':'RSI Trend',
@@ -2103,61 +2156,38 @@ def main():
                 'trend':'Trend','trend200':'Trend200',
                 'high20':'High20','low5':'Low5','dh20':'DistHigh20%',
                 'volr':'VolRatio','rvol50':'RVOL50','avgvol':'AvgVol20','dolvol_m':'DollarVol20',
-                'liq':'LiquidityPass',
-                'atr20':'ATR20','sqz':'Squeeze',
+                'liq':'LiquidityPass','atr20':'ATR20','sqz':'Squeeze',
                 'rs_t':'RS Trend','hl':'HigherLow','ia':'InstAccum','cap':'CapRisk',
                 'ifs':'InstFlowScore','ls':'LiquidityScore',
                 'ts':'TrendScore','ss':'SetupScore','rp':'RiskPenalty','score':'PriorityScore',
                 'setup':'SetupState','buy':'BuySignal','sell':'SellSignal','stop':'Stop',
                 'rs_rank':'RS Rank','stage':'Stage',
-                # ── Earnings ──
-                'earnings_date':'Earnings Date','days_to_earnings':'Days to Earn.','earnings_flag':'Earn. Flag',
-                # ── Rotation (kun portefølje) ──
-                'is_in_portfolio':'Portfolio','best_peer':'Best Peer','best_peer_score':'Peer Score',
-                'rotation_score':'Rot. Score','rotation_action':'Rot. Action',
+                'earnings_date':'Earnings','days_to_earnings':'Days','earnings_flag':'Earn.Flag',
+                'is_in_portfolio':'Portfolio','best_peer':'Best Peer',
+                'best_peer_score':'Peer Score','rotation_score':'Rot.Score','rotation_action':'Rot.Action',
             }
-
-            def earn_flag_style(val):
-                return {
-                    'RISK':     'background:#cc0000;color:#fff;font-weight:700',
-                    'SOON':     'background:#cc8800;color:#000;font-weight:700',
-                    'UPCOMING': 'background:#004499;color:#aad4ff',
-                    'LATER':    'background:#111;color:#444',
-                    'N/A':      'background:#0a0a0a;color:#333',
-                }.get(val, '')
-
-            def rot_action_style(val):
-                return {
-                    'ROTATE': 'background:#cc0000;color:#fff;font-weight:700',
-                    'TRIM':   'background:#cc8800;color:#000;font-weight:700',
-                    'HOLD':   'background:#003322;color:#00ff88',
-                }.get(val, '')
-
             flt_d = flt[[c for c in cols.keys() if c in flt.columns]].rename(columns=cols)
             flt_d = flt_d.set_index(['Ticker','Name'])
 
-            style = flt_d.style \
-                .applymap(sig_style, subset=[c for c in ['BuySignal','SellSignal'] if c in flt_d.columns])
-            if 'Earn. Flag' in flt_d.columns:
-                style = style.applymap(earn_flag_style, subset=['Earn. Flag'])
-            if 'Rot. Action' in flt_d.columns:
-                style = style.applymap(rot_action_style, subset=['Rot. Action'])
-
+            style = flt_d.style.applymap(sig_style, subset=[c for c in ['BuySignal','SellSignal'] if c in flt_d.columns])
+            if 'Earn.Flag' in flt_d.columns:
+                style = style.applymap(earn_flag_style, subset=['Earn.Flag'])
+            if 'Rot.Action' in flt_d.columns:
+                style = style.applymap(rot_action_style, subset=['Rot.Action'])
             style = style.format({
                 'Price':'{:.2f}','Daily%':'{:+.1f}%','RSI':'{:.1f}',
                 'SMA20':'{:.2f}','SMA60':'{:.2f}','SMA200':'{:.2f}',
-                'High20':'{:.2f}','Low5':'{:.2f}',
-                'DistHigh20%':'{:.1f}%','VolRatio':'{:.2f}','RVOL50':'{:.2f}',
-                'DollarVol20':'{:.1f}M','ATR20':'{:.2f}',
+                'High20':'{:.2f}','Low5':'{:.2f}','DistHigh20%':'{:.1f}%',
+                'VolRatio':'{:.2f}','RVOL50':'{:.2f}','DollarVol20':'{:.1f}M','ATR20':'{:.2f}',
                 'InstFlowScore':'{:.0f}','LiquidityScore':'{:.0f}',
                 'TrendScore':'{:.0f}','SetupScore':'{:.0f}','RiskPenalty':'{:.0f}',
                 'PriorityScore':'{:.0f}','RS Rank':'{:.0f}',
-                'Peer Score':'{:.0f}','Rot. Score':'{:.1f}',
+                'Peer Score':'{:.0f}','Rot.Score':'{:.1f}',
             }, na_rep='—')
 
             st.dataframe(style, use_container_width=True, height=750)
             csv = flt.to_csv(index=False).encode('utf-8')
-            st.download_button("⬇ EKSPORT CSV",csv,'scanner.csv','text/csv')
+            st.download_button("⬇ EKSPORT CSV", csv, 'scanner.csv', 'text/csv')
 
     # ═══════════════════════════════════════════
     # TAB 3: BENCHMARK
