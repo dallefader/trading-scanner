@@ -1984,7 +1984,7 @@ def main():
             flt_d = flt_d.set_index(['Ticker','Name'])
             st.dataframe(
                 flt_d.style
-                .applymap(sig_style,subset=['BuySignal','SellSignal'])
+                .map(sig_style,subset=['BuySignal','SellSignal'])
                 .format({
                     'Price':'{:.2f}','Daily%':'{:+.1f}%','RSI':'{:.1f}',
                     'SMA20':'{:.2f}','SMA60':'{:.2f}','SMA200':'{:.2f}',
@@ -2027,7 +2027,7 @@ def main():
                     def cp(v):
                         if isinstance(v,(int,float)): return f'color:{"#00ff41" if v>0 else "#ff3333" if v<0 else "#008f23"}'
                         return 'color:#008f23'
-                    st.dataframe(df_b.style.applymap(cp,subset=['1D%','5D%','30D%'])
+                    st.dataframe(df_b.style.map(cp,subset=['1D%','5D%','30D%'])
                                  .format({'Pris':'{:.2f}','1D%':'{:+.1f}%','5D%':'{:+.1f}%','30D%':'{:+.1f}%'}),
                                  use_container_width=True,hide_index=True)
 
@@ -2059,8 +2059,8 @@ def main():
             c1,c2,c3,c4=st.columns(4)
             c1.metric("POSITIONER",len(pos_df)); c2.metric("TOTAL PnL",f"{tp:+.0f} kr")
             c3.metric("GNS PnL%",f"{ap:+.1f}%"); c4.metric("WINNERS",f"{wn}/{len(pos_df)}")
-            st.dataframe(pos_df.style.applymap(pnl_style,subset=['PnL%','PnLkr'])
-                         .applymap(sig_style,subset=['SIGNAL'])
+            st.dataframe(pos_df.style.map(pnl_style,subset=['PnL%','PnLkr'])
+                         .map(sig_style,subset=['SIGNAL'])
                          .format({'ENTRY':'{:.2f}','NU':'{:.2f}','PnL%':'{:+.2f}%','PnLkr':'{:+.0f}'}),
                          use_container_width=True,hide_index=True)
         else:
@@ -2098,7 +2098,7 @@ def main():
                 st.dataframe(wl_df[['ticker','name','sector','price','dpct','rsi','rs_rank','stage','score','buy','stop']]
                              .rename(columns={'ticker':'TICKER','name':'NAVN','sector':'SEKTOR','price':'PRIS',
                                               'dpct':'1D%','rsi':'RSI','rs_rank':'RS','stage':'STG','score':'SCORE','buy':'SIGNAL','stop':'STOP'})
-                             .style.applymap(sig_style,subset=['SIGNAL'])
+                             .style.map(sig_style,subset=['SIGNAL'])
                              .format({'PRIS':'{:.2f}','1D%':'{:+.1f}%','RSI':'{:.1f}','SCORE':'{:.0f}'}),
                              use_container_width=True,hide_index=True)
         else:
@@ -2174,7 +2174,7 @@ def main():
             top25=scan.nlargest(25,'rs_rank')[['ticker','name','sector','region','price','dpct','rsi','rs_rank','stage','score','buy']]
             st.dataframe(top25.rename(columns={'ticker':'TICKER','name':'NAVN','sector':'SEKTOR','region':'REGION',
                 'price':'PRIS','dpct':'1D%','rsi':'RSI','rs_rank':'RS','stage':'STG','score':'SCORE','buy':'SIGNAL'})
-                .style.applymap(sig_style,subset=['SIGNAL'])
+                .style.map(sig_style,subset=['SIGNAL'])
                 .format({'PRIS':'{:.2f}','1D%':'{:+.1f}%','RSI':'{:.1f}','SCORE':'{:.0f}'}),
                 use_container_width=True,hide_index=True)
 
